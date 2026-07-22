@@ -1,13 +1,202 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// SaaS Metrics Dashboard — Prisma schema
+// Money is stored as integer minor units (cents). Never Float, never Decimal.
+// Metrics are DERIVED from Subscription/Invoice rows and rolled up into MetricSnapshot.
 
 generator client {
-  provider = "prisma-client"
-  output   = "../lib/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Auth (Auth.js / NextAuth Prisma adapter)
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts    Account[]
+  sessions    Session[]
+  memberships Membership[]
+}
+
+model Account {
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@id([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships   Membership[]
+  subscriptions Subscription[]
+  invoices      Invoice[]
+  snapshots     MetricSnapshot[]
+}
+
+model Membership {
+  userId         String
+  organizationId String
+  role           Role     @default(MEMBER)
+  createdAt      DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([userId, organizationId])
+  @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Billing — the source of truth every dashboard number derives from
+// ---------------------------------------------------------------------------
+
+model Subscription {
+  id             String             @id @default(cuid())
+  organizationId String
+  tier           PlanTier
+  status         SubscriptionStatus @default(ACTIVE)
+  amountCents    Int
+  currency       String             @default("USD")
+  interval       BillingInterval    @default(MONTHLY)
+  startedAt      DateTime
+  canceledAt     DateTime?
+  endedAt        DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invoices     Invoice[]
+
+  @@index([organizationId, status])
+  @@index([startedAt])
+  @@index([canceledAt])
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  organizationId String
+  subscriptionId String
+  amountCents    Int
+  currency       String        @default("USD")
+  status         InvoiceStatus @default(PAID)
+  issuedAt       DateTime
+  paidAt         DateTime?
+  createdAt      DateTime      @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, issuedAt])
+  @@index([subscriptionId])
+}
+
+// ---------------------------------------------------------------------------
+// Daily rollup — recomputed from the rows above, never hand-written.
+// ARR = mrrCents * 12. Churn rate = churnedSubs / activeSubs at period start.
+// Neither is stored: both are derived at read time.
+// ---------------------------------------------------------------------------
+
+model MetricSnapshot {
+  id             String   @id @default(cuid())
+  organizationId String
+  date           DateTime @db.Date
+
+  mrrCents    Int
+  activeSubs  Int
+  newSubs     Int
+  churnedSubs Int
+  activeUsers Int
+  newUsers    Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, date])
+}
+
+// ---------------------------------------------------------------------------
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum PlanTier {
+  FREE
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
+}
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  VOID
+  UNCOLLECTIBLE
 }
