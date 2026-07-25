@@ -3,18 +3,11 @@
 // client leaf that owns the interactive form.
 import type { Metadata } from "next";
 
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { isGithubEnabled } from "@/lib/env";
 import { SignInForm } from "@/components/auth/sign-in-form";
 
 export const metadata: Metadata = {
-  title: "Sign in — SaaS Metrics Dashboard",
+  title: "Sign in",
   description: "Sign in to access your SaaS metrics dashboard.",
 };
 
@@ -26,22 +19,27 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
   const { callbackUrl, error } = await searchParams;
 
   return (
-    <main className="flex min-h-screen flex-1 items-center justify-center bg-muted/30 p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle>Sign in</CardTitle>
-          <CardDescription>
-            Use the demo account, or continue with GitHub.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <SignInForm
-            callbackUrl={callbackUrl ?? "/dashboard"}
-            githubEnabled={isGithubEnabled}
-            initialError={error}
-          />
-        </CardContent>
-      </Card>
-    </main>
+    <div className="w-full max-w-sm">
+      <div className="flex flex-col gap-1.5">
+        <h1 className="font-heading text-2xl font-semibold tracking-tight">
+          Sign in
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Welcome back. Use the demo account, or continue with GitHub.
+        </p>
+      </div>
+
+      <div className="mt-6">
+        <SignInForm
+          callbackUrl={callbackUrl ?? "/dashboard"}
+          githubEnabled={isGithubEnabled}
+          initialError={error}
+        />
+      </div>
+
+      <p className="mt-6 text-xs text-muted-foreground">
+        By continuing you agree to the terms of service and privacy policy.
+      </p>
+    </div>
   );
 }

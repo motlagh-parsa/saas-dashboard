@@ -2,10 +2,11 @@
 
 // Client leaf: the only interactive part of the sign-in page. It calls NextAuth's
 // client `signIn` directly against /api/auth/* — no bespoke POST endpoint, no
-// SessionProvider needed. Kept intentionally lightly styled; the ui-designer polishes later.
+// SessionProvider needed.
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
+import { TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -75,9 +76,10 @@ export function SignInForm({
       {error ? (
         <p
           role="alert"
-          className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          className="flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2.5 text-sm text-destructive"
         >
-          {error}
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+          <span>{error}</span>
         </p>
       ) : null}
 
@@ -89,10 +91,12 @@ export function SignInForm({
             name="email"
             type="email"
             autoComplete="email"
+            placeholder="you@company.com"
             required
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             disabled={pending}
+            className="h-11"
           />
         </div>
 
@@ -107,10 +111,15 @@ export function SignInForm({
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             disabled={pending}
+            className="h-11"
           />
         </div>
 
-        <Button type="submit" disabled={pending} className="w-full">
+        <Button
+          type="submit"
+          disabled={pending}
+          className="mt-1 h-11 w-full bg-brand text-brand-foreground hover:bg-brand/90"
+        >
           {pending ? "Signing in…" : "Sign in"}
         </Button>
       </form>
@@ -127,7 +136,7 @@ export function SignInForm({
             variant="outline"
             onClick={onGithubSignIn}
             disabled={pending}
-            className="w-full"
+            className="h-11 w-full"
           >
             Continue with GitHub
           </Button>
