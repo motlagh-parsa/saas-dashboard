@@ -98,6 +98,13 @@ model Membership {
 
 // ---------------------------------------------------------------------------
 // Billing — the source of truth every dashboard number derives from
+//
+// NOTE: `Subscription.amountCents >= 0` is enforced by a CHECK constraint added in
+// migration 20260816121500_subscription_handoff_link_and_metric_indexes. Prisma has
+// no schema syntax for CHECK constraints and does not track them for drift, so the
+// migration is the only place it appears. A negative subscription price would break
+// the NRR expansion/contraction identity and make Postgres `ROUND()` disagree with
+// the seed's `Math.round()` on exact halves.
 // ---------------------------------------------------------------------------
 
 model Subscription {
@@ -111,15 +118,36 @@ model Subscription {
   startedAt      DateTime
   canceledAt     DateTime?
   endedAt        DateTime?
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Plan-change hand-off link: the segment this one CONTINUES.
+  /// Set only when a segment supersedes another (upgrade/downgrade/renewal change);
+  /// NULL for genuinely new or reactivated customers. `@unique` is load-bearing —
+  /// it makes the hand-off graph a forest of simple paths (a segment has at most one
+  /// predecessor via the column, and at most one successor via the unique index), so
+  /// the NRR chain walk in lib/metrics.ts cannot fan out, fan in, or double-count.
+  previousSubscriptionId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // SetNull, not Cascade: deleting an old segment must not delete the customer's
+  // whole future lifecycle — it just breaks the link. Restrict would block the
+  // Organization cascade delete above.
+  previous     Subscription? @relation("SubscriptionHandoff", fields: [previousSubscriptionId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  next         Subscription? @relation("SubscriptionHandoff")
   invoices     Invoice[]
 
-  @@index([organizationId, status])
-  @@index([startedAt])
-  @@index([canceledAt])
+  // Live-as-of predicate (`startedAt <= t AND (endedAt IS NULL OR endedAt > t)`)
+  // scoped to a tenant. Serves getMRR/mrrByCurrencyQuery, the NRR opening cohort,
+  // and getActiveSubscriptions. Leading `organizationId` also covers the plain
+  // tenant lookup and the Organization cascade-delete FK.
+  @@index([organizationId, startedAt, endedAt])
+  // "which of this tenant's segments ended in this window" — the hand-off/churn
+  // direction, and the churn denominator's endedAt half.
+  @@index([organizationId, endedAt])
+  // churnQuery's numerator: canceledAt in (start, end], tenant-scoped.
+  @@index([organizationId, canceledAt])
 }
 
 model Invoice {

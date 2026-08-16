@@ -5,9 +5,15 @@
  *   - Money is INTEGER MINOR UNITS (cents). Never Float/Decimal.
  *   - Subscriptions are modeled as a chain of lifecycle SEGMENTS per org:
  *       * plan change (upgrade/downgrade) = end the current segment (endedAt = change
- *         date, canceledAt = null) and open a NEW segment starting the same day.
+ *         date, canceledAt = null) and open a NEW segment starting the same day, with
+ *         previousSubscriptionId pointing back at the segment it supersedes.
  *       * churn                            = end the segment with NO same-day
- *         replacement (endedAt = canceledAt = churn date, status CANCELED).
+ *         replacement (endedAt = canceledAt = churn date, status CANCELED). Nothing
+ *         ever links back to a cancelled segment, so a later reactivation starts a
+ *         fresh chain (see Hooli: churn -> 6-month gap -> reactivation).
+ *     The previousSubscriptionId link is what lets lib/metrics.ts follow a customer
+ *     across plan changes when computing NRR. It is `@unique`, so the hand-off graph
+ *     is a forest of simple paths and the chain walk cannot fan out or fan in.
  *   - Invoices are generated per billing period per segment from the segment amount.
  *   - MetricSnapshot rows are COMPUTED from the Subscription rows we actually wrote
  *     (re-queried from the database), never randomized — so a reviewer who sums
@@ -36,6 +42,10 @@
  * Determinism: no Math.random() is used. Any per-segment "jitter" is a pure function
  * of stable inputs (org slug + tier + start date), so re-running produces identical
  * numbers. The run first clears seed-owned tables in FK-safe order, so it is idempotent.
+ *
+ * The ONE moving input is the anchor date: the 18-month window ends on the day the
+ * seed runs, so the dashboard's short presets always land on real data. Everything
+ * else derives from it. Pin it with SEED_ANCHOR_DATE=YYYY-MM-DD for reproducible runs.
  */
 
 // Prisma 7: the client resolves from "@prisma/client" (classic prisma-client-js
@@ -60,15 +70,61 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 // ---------------------------------------------------------------------------
-// Window: 18 months of daily history, Jan 1 2025 .. Jul 19 2026 (exclusive).
+// Window: 18 months of daily history ending on the anchor day (inclusive).
+//
+// The window is ANCHORED TO THE CURRENT DATE rather than hardcoded. A fixed window
+// goes stale: once "now" drifts past its end, `last_7_days` / `month_to_date` /
+// `last_30_days` all resolve to ranges with no data in them and the dashboard renders
+// flat MRR and 0% churn.
+//
+// The anchor is the ONLY moving input in this file. Everything else is a pure
+// function of it plus stable strings, so a re-run on the same day reproduces
+// byte-identical output. Set SEED_ANCHOR_DATE=YYYY-MM-DD to pin it.
+//
 // All dates are UTC midnights; time-zone conversion is a presentation concern.
 // ---------------------------------------------------------------------------
 
 const DAY_MS = 86_400_000;
-const WINDOW_START = new Date(Date.UTC(2025, 0, 1)); // 2025-01-01
-const WINDOW_END_EXCLUSIVE = new Date(Date.UTC(2026, 6, 19)); // 2026-07-19 ("today")
-const CURRENT_MONTH_START = new Date(Date.UTC(2026, 6, 1)); // 2026-07-01
-const PREV_MONTH_START = new Date(Date.UTC(2026, 5, 1)); // 2026-06-01
+
+function addMonthsUTC(base: Date, months: number): Date {
+  return new Date(
+    Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + months, base.getUTCDate()),
+  );
+}
+
+function addDaysUTC(base: Date, days: number): Date {
+  return new Date(base.getTime() + days * DAY_MS);
+}
+
+/** Calendar months of history generated before the anchor month. */
+const HISTORY_MONTHS = 17;
+
+function resolveAnchor(): Date {
+  const override = process.env.SEED_ANCHOR_DATE;
+  const base = override === undefined ? new Date() : new Date(`${override}T00:00:00.000Z`);
+  if (Number.isNaN(base.getTime())) {
+    throw new Error(`SEED_ANCHOR_DATE must be YYYY-MM-DD; got "${override}".`);
+  }
+  // Clamp day-of-month to 28 so the month arithmetic above can never roll over:
+  // addMonthsUTC does NOT clamp, so an anchor on the 31st would make
+  // `Date.UTC(y, m + 1, 31)` spill into the following month and desynchronise the
+  // segment offsets from the snapshot grid.
+  return new Date(
+    Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), Math.min(base.getUTCDate(), 28)),
+  );
+}
+
+/** "Today" at UTC midnight. Segment lifecycle offset `HISTORY_MONTHS` lands here. */
+const ANCHOR = resolveAnchor();
+
+/** Lifecycle offset 0 — `HISTORY_MONTHS` before the anchor, same day-of-month. */
+const WINDOW_START = addMonthsUTC(ANCHOR, -HISTORY_MONTHS);
+/** Exclusive. Daily snapshots run up to AND INCLUDING the anchor day. */
+const WINDOW_END_EXCLUSIVE = addDaysUTC(ANCHOR, 1);
+const CURRENT_MONTH_START = new Date(
+  Date.UTC(ANCHOR.getUTCFullYear(), ANCHOR.getUTCMonth(), 1),
+);
+const PREV_MONTH_START = addMonthsUTC(CURRENT_MONTH_START, -1);
 
 // ---------------------------------------------------------------------------
 // Pricing — consistent per (tier, interval), in integer cents.
@@ -112,20 +168,11 @@ function normalizedMonthlyCents(
 }
 
 // ---------------------------------------------------------------------------
-// Date helpers (all UTC).
+// Date helpers (all UTC). addMonthsUTC / addDaysUTC are defined above the window
+// block because the anchor constants depend on them.
 // ---------------------------------------------------------------------------
 
-function addMonthsUTC(base: Date, months: number): Date {
-  return new Date(
-    Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + months, base.getUTCDate()),
-  );
-}
-
-function addDaysUTC(base: Date, days: number): Date {
-  return new Date(base.getTime() + days * DAY_MS);
-}
-
-/** Date at the 1st of `offset` months after the window start. */
+/** Lifecycle date `offset` months after the window start (same day-of-month). */
 function monthOffsetDate(offset: number): Date {
   return addMonthsUTC(WINDOW_START, offset);
 }
@@ -258,6 +305,12 @@ export const ORG_SPECS: OrgSpec[] = [
 
 interface BuiltSegment {
   syntheticId: string; // stable id for in-memory reconciliation; DB uses real cuids
+  /**
+   * Synthetic id of the segment this one CONTINUES, or null if it starts a fresh
+   * lifecycle. Resolved to a real cuid and written to
+   * `Subscription.previousSubscriptionId` in main().
+   */
+  previousSyntheticId: string | null;
   tier: PlanTier;
   interval: BillingInterval;
   amountCents: number;
@@ -278,8 +331,20 @@ export function buildSegments(spec: OrgSpec): BuiltSegment[] {
     // canceledAt is set ONLY for a true customer cancellation (churn), never for a
     // plan-change hand-off. Mirrors the churn definition and the canceledAt index.
     const canceledAt = isChurn ? endedAt : null;
+
+    // The hand-off link. A segment continues the previous one ONLY when that one
+    // ended in a PLAN_CHANGE. After a CHURN the link stays null — that is what keeps
+    // Hooli's churn -> 6-month gap -> reactivation scored as churn instead of letting
+    // the NRR chain walk hop the gap and call the customer retained.
+    const predecessor = index > 0 ? spec.segments[index - 1] : null;
+    const previousSyntheticId =
+      predecessor !== null && predecessor.endReason === "PLAN_CHANGE"
+        ? `${spec.slug}#${index - 1}`
+        : null;
+
     return {
       syntheticId: `${spec.slug}#${index}`,
+      previousSyntheticId,
       tier: seg.tier,
       interval: seg.interval,
       amountCents: amountForCents(seg.tier, seg.interval),
@@ -425,8 +490,23 @@ async function main(): Promise<void> {
       },
     });
 
+    // Segments are built in lifecycle order, so a predecessor always exists in this
+    // map by the time its successor is written.
+    const subscriptionIdBySynthetic = new Map<string, string>();
+
     for (const built of buildSegments(spec)) {
       if (built.isChurn) churnEventCount++;
+
+      const previousSubscriptionId =
+        built.previousSyntheticId === null
+          ? null
+          : subscriptionIdBySynthetic.get(built.previousSyntheticId) ?? null;
+
+      if (built.previousSyntheticId !== null && previousSubscriptionId === null) {
+        throw new Error(
+          `Hand-off target ${built.previousSyntheticId} was not written before ${built.syntheticId}.`,
+        );
+      }
 
       const sub = await prisma.subscription.create({
         data: {
@@ -439,9 +519,11 @@ async function main(): Promise<void> {
           startedAt: built.startedAt,
           canceledAt: built.canceledAt,
           endedAt: built.endedAt,
+          previousSubscriptionId,
         },
         select: { id: true },
       });
+      subscriptionIdBySynthetic.set(built.syntheticId, sub.id);
 
       // One invoice per billing period the segment was active. FREE => no invoice.
       if (built.amountCents > 0) {
@@ -514,6 +596,48 @@ async function main(): Promise<void> {
   const churnAgg = await prisma.metricSnapshot.aggregate({ _sum: { churnedSubs: true } });
   const totalChurnedSubs = churnAgg._sum.churnedSubs ?? 0;
 
+  // ---- Hand-off link invariants -----------------------------------------
+  // These are what the NRR chain walk in lib/metrics.ts depends on.
+  const expectedHandoffs = ORG_SPECS.reduce(
+    (total, spec) =>
+      total + buildSegments(spec).filter((s) => s.previousSyntheticId !== null).length,
+    0,
+  );
+  const actualHandoffs = await prisma.subscription.count({
+    where: { previousSubscriptionId: { not: null } },
+  });
+  if (actualHandoffs !== expectedHandoffs) {
+    throw new Error(
+      `Invariant violated: expected ${expectedHandoffs} hand-off links, found ${actualHandoffs}.`,
+    );
+  }
+
+  // A cancelled segment must never be superseded — that is the churn/plan-change
+  // distinction the whole NRR calculation rests on.
+  const cancelledWithSuccessor = await prisma.subscription.count({
+    where: { canceledAt: { not: null }, next: { isNot: null } },
+  });
+  if (cancelledWithSuccessor !== 0) {
+    throw new Error(
+      `Invariant violated: ${cancelledWithSuccessor} cancelled segment(s) have a successor.`,
+    );
+  }
+
+  // A hand-off must never cross a tenant boundary. Prisma's filter language cannot
+  // compare a column against a column on the related row, so this is raw — with the
+  // comparison done entirely in SQL, no user input, no interpolation.
+  const [{ count: crossOrgLinks }] = await prisma.$queryRaw<{ count: bigint }[]>`
+    SELECT COUNT(*) AS count
+    FROM "Subscription" s
+    JOIN "Subscription" p ON p.id = s."previousSubscriptionId"
+    WHERE p."organizationId" <> s."organizationId"
+  `;
+  if (Number(crossOrgLinks) !== 0) {
+    throw new Error(
+      `Invariant violated: ${crossOrgLinks} hand-off link(s) cross an organization boundary.`,
+    );
+  }
+
   // Latest-day headline numbers so the run visibly makes sense.
   const latest = await prisma.metricSnapshot.aggregate({
     where: { date: new Date(WINDOW_END_EXCLUSIVE.getTime() - DAY_MS) },
@@ -524,9 +648,14 @@ async function main(): Promise<void> {
     _sum: { amountCents: true },
   });
 
+  const isoDay = (d: Date): string => d.toISOString().slice(0, 10);
+
   console.log("Seed complete.");
+  console.log(`  anchor        : ${isoDay(ANCHOR)}${process.env.SEED_ANCHOR_DATE ? " (pinned via SEED_ANCHOR_DATE)" : " (today, UTC)"}`);
+  console.log(`  window        : ${isoDay(WINDOW_START)} .. ${isoDay(ANCHOR)} inclusive`);
   console.log(`  organizations : ${orgCount}`);
   console.log(`  subscriptions : ${subCount} (segments across all orgs)`);
+  console.log(`  hand-off links: ${actualHandoffs} (plan changes; null across churn gaps)`);
   console.log(`  invoices      : ${invoiceCount}`);
   console.log(`  snapshots     : ${snapshotCount}`);
   console.log(`  churn events  : ${totalChurnedSubs} (segment cancellations w/o replacement)`);
