@@ -39,6 +39,13 @@
   --color-chart-3: var(--chart-3);
   --color-chart-2: var(--chart-2);
   --color-chart-1: var(--chart-1);
+
+  /* Ordinal plan-tier ramp + chart chrome. */
+  --color-tier-1: var(--tier-1);
+  --color-tier-2: var(--tier-2);
+  --color-tier-3: var(--tier-3);
+  --color-tier-4: var(--tier-4);
+  --color-chart-grid: var(--chart-grid);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -111,6 +118,23 @@
   --chart-4: oklch(0.52 0.11 268);
   --chart-5: oklch(0.62 0.17 24);
 
+  /*
+    Plan tiers are ORDINAL (FREE < STARTER < PRO < ENTERPRISE), so they take a
+    single-hue SEQUENTIAL brass ramp, not the categorical series above.
+
+    On paper, sequential runs light -> dark as rank rises, so tier-1 is the
+    palest step. The pale end stops at L 0.665 rather than going lighter: past
+    that it falls under 3:1 against a white card and the low tiers stop reading
+    as marks at all. Even steps of ~0.068 in L keep rank legible as rank.
+  */
+  --tier-1: oklch(0.665 0.115 74);
+  --tier-2: oklch(0.6 0.12 74);
+  --tier-3: oklch(0.53 0.125 74);
+  --tier-4: oklch(0.46 0.125 74);
+
+  /* Chart chrome. The grid must never compete with the data. */
+  --chart-grid: oklch(0.915 0.004 260);
+
   --sidebar: oklch(0.975 0.004 260);
   --sidebar-foreground: oklch(0.24 0.012 260);
   --sidebar-primary: oklch(0.62 0.13 72);
@@ -163,6 +187,20 @@
   --chart-4: oklch(0.66 0.12 266);
   --chart-5: oklch(0.7 0.17 22);
 
+  /*
+    The ramp inverts on graphite. Sequential always means "furthest from the
+    surface = highest rank", and on a dark surface that direction is dim -> bright:
+    dim brass up to full signal gold, where tier-4 lands exactly on --brand.
+    tier-1 stops at L 0.52 because below that it drops under 3:1 against the card.
+    Even steps of ~0.093 in L.
+  */
+  --tier-1: oklch(0.52 0.06 78);
+  --tier-2: oklch(0.615 0.083 78);
+  --tier-3: oklch(0.71 0.106 78);
+  --tier-4: oklch(0.8 0.13 78);
+
+  --chart-grid: oklch(1 0 0 / 7%);
+
   --sidebar: oklch(0.15 0.008 260);
   --sidebar-foreground: oklch(0.93 0.005 260);
   --sidebar-primary: oklch(0.8 0.13 78);
@@ -196,12 +234,37 @@
   }
 }
 
+/*
+  Page-load sequence. Sections settle upward in reading order so the eye lands on
+  the headline figure first. Motion marks the arrival of data — it is never
+  decorative, and it never loops.
+*/
+@keyframes ledger-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@layer components {
+  .rise {
+    animation: ledger-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
 /* Quality floor: honor reduced-motion everywhere. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    /* Staggered entrances also need their delay zeroed, or a fill-mode:both
+       animation would hold its "from" state for the length of the stagger. */
+    animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
