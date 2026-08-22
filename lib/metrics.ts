@@ -129,7 +129,10 @@ export interface ARRResult {
 export interface ChurnRateResult {
   readonly organizationId: string;
   readonly period: ResolvedPeriod;
-  /** Subscriptions live as of `period.start` — the churn DENOMINATOR. */
+  /**
+   * Subscription SEGMENTS live as of `period.start` — the churn DENOMINATOR. Not a
+   * customer count; see the CHAIN VS SEGMENT note on `RevenueMovementPoint`.
+   */
   readonly activeAtPeriodStart: number;
   /** Members of that opening cohort cancelled within `(start, end]` — the NUMERATOR. */
   readonly churnedInPeriod: number;
@@ -144,7 +147,14 @@ export interface ChurnRateResult {
 export interface NetRevenueRetentionResult {
   readonly organizationId: string;
   readonly period: ResolvedPeriod;
-  /** Number of subscriptions in the opening cohort. */
+  /**
+   * Number of PAYING subscription SEGMENTS in the opening cohort.
+   *
+   * Two things this is not. It excludes FREE-tier / zero-MRR segments, which are not
+   * part of a revenue-retention cohort at all (see collision C1 in the query below).
+   * And it counts segments, not customers -- see the CHAIN VS SEGMENT note on
+   * `RevenueMovementPoint`. Do not render it beside a customer count.
+   */
   readonly cohortSize: number;
   /** Cohort MRR as of `period.start`, in cents. */
   readonly startingMRRCents: number;
@@ -158,7 +168,11 @@ export interface NetRevenueRetentionResult {
   readonly churnedMRRCents: number;
   /**
    * (starting + expansion - contraction - churn) / starting, as a FRACTION
-   * (1.12 = 112% NRR). `null` when `startingMRRCents` is 0 — undefined, not 0.
+   * (1.12 = 112% NRR). `null` when the cohort is empty — undefined, not 0.
+   *
+   * Since the cohort now admits only paying segments, `startingMRRCents` is 0 exactly
+   * when `cohortSize` is 0, so a null NRR always means "no paying customers at period
+   * start" rather than the old ambiguous "cohort existed but billed nothing".
    */
   readonly nrr: number | null;
 }
@@ -176,6 +190,10 @@ export interface SubscriptionStatusCount {
 export interface ActiveSubscriptionsResult {
   readonly organizationId: string;
   readonly asOf: Date;
+  /**
+   * Live subscription SEGMENTS, not customers — see the CHAIN VS SEGMENT note on
+   * `RevenueMovementPoint`. Do not render this beside a lifecycle/customer count.
+   */
   readonly total: number;
   /** Only tiers actually present, highest count first. Absent tier => 0. */
   readonly byTier: readonly PlanTierCount[];
@@ -191,13 +209,144 @@ export interface MRRTrendPoint {
   readonly month: string;
   /** UTC date of the snapshot the point-in-time values were read from, `YYYY-MM-DD`. */
   readonly asOfDate: string;
-  /** Month-end MRR in cents (last snapshot of the month). */
+  /**
+   * Month-end MRR in cents, read from the LAST SNAPSHOT of the month.
+   *
+   * That instant is convention (A) of collision C3 — see the "Month-bucketed series"
+   * banner further down. `getRevenueMovement` and `getChurnRateTrend` use convention
+   * (B), the month boundary. The two agree except in a month containing an event dated
+   * exactly the 1st of the following month, where they differ by that segment's MRR.
+   */
   readonly mrrCents: number;
-  /** Month-end active subscription count (last snapshot of the month). */
+  /**
+   * Month-end count of live SEGMENTS, not customers — see the CHAIN VS SEGMENT note on
+   * `RevenueMovementPoint`.
+   */
   readonly activeSubs: number;
   /** Flow metrics: summed across every snapshot in the month. */
   readonly newSubs: number;
   readonly churnedSubs: number;
+}
+
+/**
+ * One calendar month of the revenue bridge.
+ *
+ * ---------------------------------------------------------------------------
+ * CHAIN VS SEGMENT — do not put these counts next to each other
+ * ---------------------------------------------------------------------------
+ * There is no `Customer` table. `Organization` is the TENANT, and a customer is only
+ * reconstructible as a maximal chain of `Subscription` segments linked by
+ * `previousSubscriptionId`. So there are two different denominators in this file and
+ * they are not interchangeable:
+ *
+ *   - SEGMENT counts — `getActiveSubscriptions().total`, `getMRRTrend().activeSubs`,
+ *     `getChurnRateTrend().activeAtStart`, `NetRevenueRetentionResult.cohortSize`.
+ *   - CHAIN counts — the buckets below, which attribute money to a whole lifecycle so
+ *     that an upgrade is one customer expanding rather than one death and one birth.
+ *
+ * A single customer mid-plan-change is one chain and one live segment, so the two
+ * agree in the common case and diverge exactly when it matters. Label any axis built
+ * from these "subscriptions" or "lifecycles" — never silently "customers".
+ */
+export interface RevenueMovementPoint {
+  /** UTC calendar month `YYYY-MM`. This is the month the movement happened IN. */
+  readonly month: string;
+  /** Opening boundary — MRR is measured as of this instant. */
+  readonly periodStart: Date;
+  /** Closing boundary. `periodStart` + 1 month, except for a partial trailing month. */
+  readonly periodEnd: Date;
+  /** False for the in-progress month, whose closing boundary is `asOf`, not a month start. */
+  readonly isComplete: boolean;
+  readonly startingMRRCents: number;
+  readonly endingMRRCents: number;
+  /** First time this lifecycle ever billed anything. */
+  readonly newMRRCents: number;
+  /** A lifecycle that had billed before, fell to 0 MRR, and came back. */
+  readonly reactivationMRRCents: number;
+  readonly expansionMRRCents: number;
+  /** Downgrades, as a positive magnitude. */
+  readonly contractionMRRCents: number;
+  /** Lifecycles that fell to 0 MRR, as a positive magnitude. */
+  readonly churnedMRRCents: number;
+  /** Chains billing more than 0 at `periodStart` — the NRR/GRR denominator. */
+  readonly payingChainsAtStart: number;
+  /**
+   * Net revenue retention for this month's opening cohort, as a FRACTION.
+   * `(starting + expansion - contraction - churned) / starting`. `null` when nothing
+   * was billing at `periodStart`. Excludes `new` and `reactivation` by construction —
+   * that is what separates retention from growth.
+   */
+  readonly nrr: number | null;
+  /**
+   * Gross revenue retention: `(starting - contraction - churned) / starting`. Never
+   * exceeds 1. `null` on the same condition as `nrr`.
+   */
+  readonly grr: number | null;
+}
+
+/** One calendar month of subscription churn, computed the way `getChurnRate` computes it. */
+export interface ChurnRateTrendPoint {
+  /** UTC calendar month `YYYY-MM`. */
+  readonly month: string;
+  /** The window churn events were attributed to, left-open/right-closed. */
+  readonly period: ResolvedPeriod;
+  readonly isComplete: boolean;
+  /** Subscription SEGMENTS live at `period.start` — see the CHAIN VS SEGMENT note. */
+  readonly activeAtStart: number;
+  /** Members of that opening cohort cancelled within `(start, end]`. */
+  readonly churned: number;
+  /** `churned / activeAtStart` as a FRACTION in [0, 1]; `null` when the denominator is 0. */
+  readonly rate: number | null;
+}
+
+/** Keyset pagination cursor. Matches the `[issuedAt desc, id desc]` ordering. */
+export interface InvoiceCursor {
+  readonly issuedAt: Date;
+  readonly id: string;
+}
+
+export interface InvoiceListOptions {
+  /** Filters on `issuedAt`, using the file's `(start, end]` event convention. */
+  readonly period?: Period;
+  /** Empty or omitted means every status. */
+  readonly statuses?: readonly InvoiceStatus[];
+  /** Clamped to [1, 100]. */
+  readonly limit?: number;
+  readonly cursor?: InvoiceCursor;
+}
+
+export interface InvoiceListResult {
+  readonly invoices: RecentInvoice[];
+  /** `null` when this is the last page. Pass it back as `options.cursor`. */
+  readonly nextCursor: InvoiceCursor | null;
+}
+
+export interface InvoiceStatusTotal {
+  readonly status: InvoiceStatus;
+  readonly count: number;
+  readonly amountCents: number;
+}
+
+export interface InvoiceTotals {
+  readonly organizationId: string;
+  readonly period: ResolvedPeriod;
+  readonly currency: string;
+  readonly isMixedCurrency: boolean;
+  /**
+   * Cash that ARRIVED in `(start, end]`, bucketed by `paidAt`. A flow.
+   * An invoice issued in March and paid in April is April's collection.
+   */
+  readonly collectedCents: number;
+  /**
+   * Balance still OPEN as of `period.end`, bucketed by `issuedAt <= end`. A stock, not
+   * a flow: it deliberately includes invoices issued before the period and still
+   * unpaid, because that is what "outstanding" means on a dashboard.
+   */
+  readonly outstandingCents: number;
+  /** Face value of everything issued in `(start, end]`, whatever its status. */
+  readonly issuedCents: number;
+  /** Statuses actually present among invoices issued in the period, largest first. */
+  readonly byStatus: readonly InvoiceStatusTotal[];
 }
 
 export interface RecentInvoice {
@@ -277,6 +426,62 @@ function addMonthsUTC(value: Date, months: number): Date {
 
 function addDaysUTC(value: Date, days: number): Date {
   return new Date(value.getTime() + days * 86_400_000);
+}
+
+/**
+ * Clamp a caller-supplied month count to `[0, MAX_TREND_MONTHS]`.
+ *
+ * Every `months` parameter in this file is the kind of value that arrives from
+ * `Number(searchParams.get("months"))`, so `NaN` is reachable from a URL. It has to be
+ * caught BEFORE the clamp: `Math.max(NaN, 0)` and `Math.min(NaN, 60)` are both `NaN`,
+ * which would bind straight into `$n::int` and make Postgres reject the statement with
+ * `invalid input syntax for type integer: "NaN"` — a 500, not an empty chart.
+ * `+/-Infinity` clamp normally. 0 and negatives mean zero months, which callers return
+ * as an empty series rather than silently widening to one month.
+ */
+function clampMonths(months: number): number {
+  const requested = Number.isNaN(months) ? DEFAULT_TREND_MONTHS : Math.trunc(months);
+  return Math.min(Math.max(requested, 0), MAX_TREND_MONTHS);
+}
+
+/** The boundary instants a month-bucketed series is measured at. See the C3 note. */
+interface MonthWindow {
+  /** Opening boundary of the earliest month returned. */
+  readonly firstBoundary: Date;
+  /** Start of the calendar month containing `asOf`. */
+  readonly lastMonthStart: Date;
+  readonly asOf: Date;
+}
+
+/**
+ * `span` months of boundaries ending at `asOf`.
+ *
+ * Produces `span` month starts plus, when `asOf` is mid-month, a final boundary at
+ * `asOf` itself — so the caller gets `span` movement rows, the last of which is the
+ * in-progress month. When `asOf` is exactly a month start the in-progress month is
+ * empty and there are `span - 1` rows.
+ */
+function monthWindow(span: number, asOf: Date): MonthWindow {
+  const lastMonthStart = startOfMonthUTC(asOf);
+  return { firstBoundary: addMonthsUTC(lastMonthStart, -(span - 1)), lastMonthStart, asOf };
+}
+
+/**
+ * The month boundaries of a `MonthWindow`, as a one-column `boundary` relation.
+ * The `UNION` tail adds the in-progress month's closing instant and is a no-op when
+ * `asOf` is already a month start.
+ */
+function monthBoundariesCte(window: MonthWindow): Prisma.Sql {
+  return Prisma.sql`
+    boundaries AS (
+      SELECT generate_series(
+               ${ts(window.firstBoundary)},
+               ${ts(window.lastMonthStart)},
+               INTERVAL '1 month') AS boundary
+      UNION
+      SELECT ${ts(window.asOf)}
+      WHERE ${ts(window.asOf)} > ${ts(window.lastMonthStart)}
+    )`;
 }
 
 // ---------------------------------------------------------------------------
@@ -393,25 +598,108 @@ function ts(value: Date): Prisma.Sql {
   return Prisma.sql`${value.toISOString()}::timestamp`;
 }
 
-/** Live-as-of predicate for a `Subscription` aliased `s`. Dates, never status. */
-function activeAsOf(asOf: Date): Prisma.Sql {
-  return Prisma.sql`s."startedAt" <= ${ts(asOf)} AND (s."endedAt" IS NULL OR s."endedAt" > ${ts(asOf)})`;
-}
+/**
+ * Table aliases a `Subscription` row can carry in this file's SQL.
+ *
+ * A closed union, checked at COMPILE time. `Prisma.raw` is the only way to put an
+ * identifier into a query -- an alias cannot be a bind parameter -- so restricting the
+ * input to these four literals is what keeps the module header's "nothing is
+ * string-interpolated into SQL" promise honest. A typo is a type error, never a runtime
+ * SQL error, and no caller-supplied value can ever reach `Prisma.raw`.
+ */
+type SubscriptionAlias = "s" | "c" | "ch" | "r";
 
 /**
- * Interval normalization for a `Subscription` aliased `s`.
+ * Interval normalization for a `Subscription` under `alias`.
  * MONTHLY contributes its full amount; YEARLY is spread evenly over 12 months and
  * rounded PER ROW (matching prisma/seed.ts, so MRR reconciles with MetricSnapshot).
  * FREE never contributes, whatever amount happens to be stored on the row.
  * `BillingInterval` currently has exactly these two members; a new member would
  * fall through to the monthly branch and must be added here explicitly.
+ *
+ * This was three hand-copied CASE blocks. Every derived figure in the file runs through
+ * it, so drift between copies would have silently changed MRR, NRR and the revenue
+ * bridge independently of one another.
  */
-const NORMALIZED_MONTHLY_CENTS_S: Prisma.Sql = Prisma.sql`
+function normalizedMonthlyCents(alias: SubscriptionAlias): Prisma.Sql {
+  const a = Prisma.raw(alias);
+  return Prisma.sql`
   (CASE
-     WHEN s.tier = 'FREE'::"PlanTier" THEN 0
-     WHEN s."interval" = 'YEARLY'::"BillingInterval" THEN ROUND(s."amountCents"::numeric / 12)
-     ELSE s."amountCents"::numeric
+     WHEN ${a}.tier = 'FREE'::"PlanTier" THEN 0
+     WHEN ${a}."interval" = 'YEARLY'::"BillingInterval" THEN ROUND(${a}."amountCents"::numeric / 12)
+     ELSE ${a}."amountCents"::numeric
    END)`;
+}
+
+/**
+ * Live-as-of predicate: `startedAt <= instant AND (endedAt IS NULL OR endedAt > instant)`.
+ * A segment is inactive ON its `endedAt`. `instant` is a `Prisma.Sql` rather than a `Date`
+ * so callers can pass either a bind parameter (`ts(d)`) or a column reference from an
+ * enclosing query (a month boundary), which is what the trend queries need.
+ */
+function liveAsOf(alias: SubscriptionAlias, instant: Prisma.Sql): Prisma.Sql {
+  const a = Prisma.raw(alias);
+  return Prisma.sql`${a}."startedAt" <= ${instant} AND (${a}."endedAt" IS NULL OR ${a}."endedAt" > ${instant})`;
+}
+
+/** Live-as-of predicate for a `Subscription` aliased `s`. Dates, never status. */
+function activeAsOf(asOf: Date): Prisma.Sql {
+  return liveAsOf("s", ts(asOf));
+}
+
+/**
+ * Two comma-joined CTE definitions to follow `WITH RECURSIVE`, exposing `chain_roots`:
+ * every one of the org's subscription segments labelled with the id of the segment that
+ * STARTED its lifecycle (`root_id`).
+ *
+ * A "customer" has no table of its own (see the CHAIN VS SEGMENT note below). The nearest
+ * thing is a maximal chain of segments linked by `previousSubscriptionId`, and its head --
+ * the segment with no predecessor -- is the closest available customer identity. Because
+ * that column is `@unique`, the hand-off graph is a forest of simple paths, so this walk
+ * assigns every segment to EXACTLY ONE root and cannot double-count.
+ *
+ * The recursion is deliberately unfiltered by date: a chain whose root ended years ago can
+ * still be live today, so pruning the base case would drop live revenue. `overlapping`
+ * instead prunes the PROJECTION, after labelling is complete. That matters because callers
+ * cross-join this against month boundaries, which is O(segments x months) -- the one part
+ * of the trend queries that grows badly. Segments entirely outside the window contribute 0
+ * to every bucket, so dropping them changes no result.
+ *
+ * Tenant filter is applied in BOTH the base and the recursive branch.
+ */
+function chainRootsCte(organizationId: string, overlapping?: ResolvedPeriod): Prisma.Sql {
+  const projection = overlapping
+    ? Prisma.sql`WHERE ("endedAt" IS NULL OR "endedAt" > ${ts(overlapping.start)})
+                   AND "startedAt" <= ${ts(overlapping.end)}`
+    : Prisma.empty;
+
+  return Prisma.sql`
+    chain_walk AS (
+      SELECT
+        s.id AS root_id, s.id AS id, s."startedAt", s."endedAt", s."canceledAt",
+        s.tier, s."interval", s."amountCents", s.currency,
+        ARRAY[s.id] AS path
+      FROM "Subscription" s
+      WHERE s."organizationId" = ${organizationId}
+        AND s."previousSubscriptionId" IS NULL      -- chain head = lifecycle start
+      UNION ALL
+      SELECT
+        w.root_id, s.id, s."startedAt", s."endedAt", s."canceledAt",
+        s.tier, s."interval", s."amountCents", s.currency,
+        w.path || s.id
+      FROM chain_walk w
+      JOIN "Subscription" s
+        ON s."previousSubscriptionId" = w.id        -- 1:1 hand-off, enforced by @unique
+       AND s."organizationId" = ${organizationId}   -- tenant filter inside the recursion
+      WHERE NOT (s.id = ANY(w.path))                -- cycle guard for malformed data
+    ),
+    chain_roots AS (
+      SELECT root_id, id, "startedAt", "endedAt", "canceledAt",
+             tier, "interval", "amountCents", currency
+      FROM chain_walk
+      ${projection}
+    )`;
+}
 
 interface MRRByCurrencyRow {
   currency: string;
@@ -430,7 +718,7 @@ function mrrByCurrencyQuery(
   return prisma.$queryRaw<MRRByCurrencyRow[]>(Prisma.sql`
     SELECT
       s.currency AS currency,
-      COALESCE(SUM(${NORMALIZED_MONTHLY_CENTS_S}), 0)::bigint AS mrr_cents,
+      COALESCE(SUM(${normalizedMonthlyCents("s")}), 0)::bigint AS mrr_cents,
       COUNT(*)::int AS subscription_count
     FROM "Subscription" s
     WHERE s."organizationId" = ${organizationId}
@@ -576,7 +864,15 @@ export async function getChurnRate(
  *   ending = starting + expansion - contraction - churn
  * hold exactly, and NRR = ending / starting.
  *
- * Empty cohort or 0 starting MRR (e.g. FREE-tier only) => `nrr: null`.
+ * COHORT = PAYING SEGMENTS ONLY (collision C1). A segment whose normalized MRR is 0 at
+ * `period.start` — a FREE tier, or any zero-amount row — is not in the cohort. It used
+ * to be, and converting it to paid then showed up as `expansion` on a cohort with 0
+ * starting MRR, so the caller got a positive expansion figure next to `nrr: null`.
+ * `getRevenueMovement` classifies those same dollars as NEW business, and two pages
+ * disagreeing about one payment is worse than either answer alone. Free-to-paid is an
+ * acquisition; only a customer who was already paying can expand.
+ *
+ * Empty cohort (no paying subscriptions at `period.start`) => `nrr: null`.
  *
  * KNOWN LIMIT: a genuine 1-to-many split (one subscription becoming two) cannot be
  * expressed, by design — that ambiguity is exactly what produced the double-counting.
@@ -604,8 +900,16 @@ export async function getNetRevenueRetention(
       SELECT s.id, s."startedAt", s."endedAt", s."canceledAt", s."interval", s."amountCents", s.tier
       FROM "Subscription" s
       WHERE s."organizationId" = ${organizationId}
-        AND s."startedAt" <= ${startTs}
-        AND (s."endedAt" IS NULL OR s."endedAt" > ${startTs})
+        AND ${liveAsOf("s", startTs)}
+        -- Collision C1: the cohort is PAYING subscriptions only. A FREE-tier segment has
+        -- 0 starting MRR, so converting it to paid used to register as "expansion" on a
+        -- cohort whose starting MRR was 0 -- i.e. expansion alongside a null NRR, which
+        -- is not a reading anyone can act on. Worse, getRevenueMovement books the very
+        -- same dollars as NEW business, so the Retention and Revenue pages would have
+        -- disagreed about what those dollars were. Free-to-paid is an ACQUISITION, not
+        -- expansion of an existing paying customer, which is also the usual SaaS
+        -- convention. Excluding the row here is what makes the two pages agree.
+        AND ${normalizedMonthlyCents("s")} > 0
     ),
     chain AS (
       SELECT
@@ -630,11 +934,7 @@ export async function getNetRevenueRetention(
     per_root AS (
       SELECT
         c.id AS root_id,
-        (CASE
-           WHEN c.tier = 'FREE'::"PlanTier" THEN 0
-           WHEN c."interval" = 'YEARLY'::"BillingInterval" THEN ROUND(c."amountCents"::numeric / 12)
-           ELSE c."amountCents"::numeric
-         END) AS start_mrr,
+        ${normalizedMonthlyCents("c")} AS start_mrr,
         -- SUM, not "ORDER BY depth DESC LIMIT 1". The @unique link means a chain is a
         -- simple path with contiguous, disjoint segments, so exactly one node is live
         -- at the period end and the sum equals that node. Summing is nonetheless the
@@ -643,16 +943,10 @@ export async function getNetRevenueRetention(
         -- nodes their combined MRR is the honest ending value. Picking the deepest
         -- node was neither: it silently preferred a longer branch over a paying one.
         COALESCE((
-          SELECT SUM(
-            CASE
-              WHEN ch.tier = 'FREE'::"PlanTier" THEN 0
-              WHEN ch."interval" = 'YEARLY'::"BillingInterval" THEN ROUND(ch."amountCents"::numeric / 12)
-              ELSE ch."amountCents"::numeric
-            END)
+          SELECT SUM(${normalizedMonthlyCents("ch")})
           FROM chain ch
           WHERE ch.root_id = c.id
-            AND ch."startedAt" <= ${endTs}
-            AND (ch."endedAt" IS NULL OR ch."endedAt" > ${endTs})
+            AND ${liveAsOf("ch", endTs)}
         ), 0) AS end_mrr
       FROM cohort c
     )
@@ -760,10 +1054,7 @@ export async function getMRRTrend(
   organizationId: string,
   months: number = DEFAULT_TREND_MONTHS,
 ): Promise<MRRTrendPoint[]> {
-  // NaN must be caught BEFORE the clamp: Math.max(NaN, 0) and Math.min(NaN, 60) are
-  // both NaN, so it would otherwise pass straight through. +/-Infinity clamp normally.
-  const requested = Number.isNaN(months) ? DEFAULT_TREND_MONTHS : Math.trunc(months);
-  const span = Math.min(Math.max(requested, 0), MAX_TREND_MONTHS);
+  const span = clampMonths(months);
   if (span === 0) return [];
   const monthsBack = span - 1;
 
@@ -810,29 +1101,60 @@ export async function getMRRTrend(
 }
 
 /**
- * Most recent invoices for the org, newest first, with their subscription's tier
- * fetched in the same round trip (no per-row lookup).
+ * Invoice history, newest first, with each invoice's subscription tier fetched in the
+ * same round trip (no per-row lookup).
  *
- * The tenant filter is applied twice on purpose: directly on `Invoice`, and again
- * on the joined `Subscription`. An invoice whose subscription belongs to another
- * org is corrupt data, and it must not leak through the relation.
+ * The tenant filter is applied twice on purpose: directly on `Invoice`, and again on
+ * the joined `Subscription`. An invoice whose subscription belongs to another org is
+ * corrupt data, and it must not leak through the relation.
  *
- * No invoices => `[]`.
+ * Paging is KEYSET, not `skip`/`offset`: the ordering `[issuedAt desc, id desc]` is
+ * total (the `id` tiebreak makes same-instant rows deterministic), so a cursor is
+ * stable under concurrent inserts and costs the same on page 50 as on page 1. Ask for
+ * `take + 1` rows to learn whether another page exists without a second count query.
+ *
+ * `period` filters `issuedAt` on the file's `(start, end]` convention — an invoice is
+ * an EVENT, so it belongs to the period its issue instant falls in, and an invoice
+ * issued exactly at a boundary lands in the earlier period and only there.
+ *
+ * No invoices => `{ invoices: [], nextCursor: null }`.
  */
-export async function getRecentInvoices(
+export async function getInvoices(
   organizationId: string,
-  limit: number = 10,
-): Promise<RecentInvoice[]> {
-  const take = Math.max(1, Math.min(Math.trunc(limit) || 1, 100));
+  options: InvoiceListOptions = {},
+): Promise<InvoiceListResult> {
+  const take = Math.max(1, Math.min(Math.trunc(options.limit ?? 10) || 1, 100));
 
-  return prisma.invoice.findMany({
+  // Collected into an AND list so each filter composes without clobbering the others —
+  // in particular the keyset OR, which must not become a top-level OR beside the
+  // tenant filter or it would widen the query across organizations.
+  const filters: Prisma.InvoiceWhereInput[] = [];
+
+  if (options.period) {
+    const resolved = resolvePeriod(options.period);
+    filters.push({ issuedAt: { gt: resolved.start, lte: resolved.end } });
+  }
+  if (options.statuses && options.statuses.length > 0) {
+    filters.push({ status: { in: [...options.statuses] } });
+  }
+  if (options.cursor) {
+    filters.push({
+      OR: [
+        { issuedAt: { lt: options.cursor.issuedAt } },
+        { issuedAt: options.cursor.issuedAt, id: { lt: options.cursor.id } },
+      ],
+    });
+  }
+
+  const rows = await prisma.invoice.findMany({
     where: {
       organizationId,
       subscription: { is: { organizationId } },
+      ...(filters.length > 0 ? { AND: filters } : {}),
     },
     // `id` breaks ties so pagination/ordering is deterministic for same-instant rows.
     orderBy: [{ issuedAt: "desc" }, { id: "desc" }],
-    take,
+    take: take + 1,
     select: {
       id: true,
       amountCents: true,
@@ -843,6 +1165,31 @@ export async function getRecentInvoices(
       subscription: { select: { id: true, tier: true, interval: true } },
     },
   });
+
+  const invoices = rows.slice(0, take);
+  const last = invoices[invoices.length - 1];
+
+  return {
+    invoices,
+    nextCursor:
+      rows.length > take && last !== undefined
+        ? { issuedAt: last.issuedAt, id: last.id }
+        : null,
+  };
+}
+
+/**
+ * The newest `limit` invoices. Thin wrapper over `getInvoices` kept for the overview,
+ * whose shape (a bare array) is all it needs.
+ *
+ * No invoices => `[]`.
+ */
+export async function getRecentInvoices(
+  organizationId: string,
+  limit: number = 10,
+): Promise<RecentInvoice[]> {
+  const { invoices } = await getInvoices(organizationId, { limit });
+  return invoices;
 }
 
 /** (current - previous) / previous as a fraction; null when previous is 0. */
@@ -943,5 +1290,399 @@ export async function getMetricsSummary(
       changePoints:
         currentChurn === null || previousChurn === null ? null : currentChurn - previousChurn,
     },
+  };
+}
+// ---------------------------------------------------------------------------
+// Month-bucketed series
+//
+// COLLISION C3 — WHICH INSTANT IS "MONTH END"?
+//
+// Two defensible conventions existed and they disagree by real money:
+//
+//   (A) The last SNAPSHOT of the month. This is what getMRRTrend does: it reads
+//       MetricSnapshot and takes the newest row in each calendar month, so June is
+//       measured as of 2026-06-30 and the in-progress month as of whenever the rollup
+//       last ran.
+//   (B) The month BOUNDARY instant, 00:00:00 UTC on the 1st. June closes at
+//       2026-07-01T00:00:00Z.
+//
+// Everything below uses (B). Three reasons:
+//
+//   1. Only (B) partitions time. Consecutive windows under (B) are exactly contiguous
+//      and gapless, which is precisely the (start, end] guarantee the rest of this file
+//      already makes, so a cancellation is attributed to exactly one month. Under (A)
+//      the gap between measurement points is 30 days, then 31, then however many days
+//      into the current month the rollup has reached — buckets that are not months but
+//      are labelled as months.
+//   2. (B) measures state at a calendar instant rather than at "whenever the snapshot
+//      job last succeeded", so a late or missed rollup cannot move a historical figure.
+//   3. These functions read Subscription, the source of truth, so they do not inherit
+//      MetricSnapshot's freshness. (B) costs nothing to compute here.
+//
+// CONSEQUENCE, stated plainly: getRevenueMovement's endingMRRCents for month M equals
+// getMRRTrend's mrrCents for month M only when no segment starts or ends in the
+// interval (last snapshot of M, first instant of M+1]. Since snapshots are daily, that
+// interval is a single day, so the two agree on every month EXCEPT one containing a
+// segment whose startedAt or endedAt falls exactly on the 1st of the following month.
+// Measured against the current seed they agree on all comparable months, because the
+// seed places every lifecycle event on day 16. A segment ending exactly on 2026-07-01
+// makes June differ by that segment's MRR.
+//
+// Reconciling them on EVERY month would mean re-expressing getMRRTrend on month
+// boundaries. That is a change to an existing, already-shipped function used by the
+// overview, so it is deliberately NOT done here.
+// ---------------------------------------------------------------------------
+
+interface RevenueMovementRow {
+  month: string;
+  period_start: Date;
+  period_end: Date;
+  is_complete: boolean;
+  starting_mrr_cents: NumericLike;
+  ending_mrr_cents: NumericLike;
+  new_mrr_cents: NumericLike;
+  reactivation_mrr_cents: NumericLike;
+  expansion_mrr_cents: NumericLike;
+  contraction_mrr_cents: NumericLike;
+  churned_mrr_cents: NumericLike;
+  paying_chains_at_start: NumericLike;
+}
+
+/**
+ * The revenue bridge: where each month's MRR came from and where it went.
+ *
+ * Attribution is per LIFECYCLE (chain), not per segment — see the CHAIN VS SEGMENT note
+ * on RevenueMovementPoint. That is the whole point: a customer upgrading from PRO to
+ * ENTERPRISE ends one segment and starts another, and a per-segment reading would call
+ * that a churn plus an acquisition. Walking previousSubscriptionId instead makes it one
+ * chain whose MRR went up, which is expansion.
+ *
+ * One recursive pass labels every segment with its chain root; month boundaries are then
+ * cross-joined and LEAD compares each chain against itself one month later. There is no
+ * per-month recursion and no query in a loop.
+ *
+ * Bucketing per chain, from prev (MRR at the opening boundary) to next:
+ *   prev = 0, next > 0, never billed before  -> new
+ *   prev = 0, next > 0, billed before        -> reactivation
+ *   prev > 0, next > prev                    -> expansion
+ *   prev > 0, 0 < next < prev                -> contraction
+ *   prev > 0, next = 0                       -> churned
+ * which makes the identity
+ *   ending = starting + new + reactivation + expansion - contraction - churned
+ * hold exactly. The partition is exhaustive because normalized MRR is never negative —
+ * the CHECK constraint amountCents >= 0 (added in migration
+ * 20260816121500_subscription_handoff_link_and_metric_indexes) is what guarantees that.
+ *
+ * Rows are labelled by the OPENING month (collision C4): the movement between
+ * 2026-04-01 and 2026-05-01 is April's, and labelling it by its closing boundary would
+ * report April's acquisitions in May and disagree with getMRRTrend's month labels.
+ *
+ * REACTIVATION IS CHAIN-SCOPED, and that is a real limit. A customer who cancels
+ * outright and returns later starts a NEW chain (nothing links across a cancellation),
+ * so they are counted as new, not reactivation. Only a lifecycle that stayed linked
+ * while its MRR passed through 0 — a downgrade to FREE and back — lands in
+ * reactivation. Telling a genuinely new customer from a returning one needs a customer
+ * entity the schema does not have.
+ *
+ * `months <= 0`, or an org with no subscriptions => `[]`.
+ */
+export async function getRevenueMovement(
+  organizationId: string,
+  months: number = DEFAULT_TREND_MONTHS,
+  asOf: Date = new Date(),
+): Promise<RevenueMovementPoint[]> {
+  const span = clampMonths(months);
+  if (span === 0) return [];
+  const window = monthWindow(span, asOf);
+
+  const rows = await prisma.$queryRaw<RevenueMovementRow[]>(Prisma.sql`
+    WITH RECURSIVE ${chainRootsCte(organizationId, {
+      start: window.firstBoundary,
+      end: window.asOf,
+    })},
+    ${monthBoundariesCte(window)},
+    root_facts AS (
+      SELECT
+        r.root_id,
+        -- The first instant this lifecycle ever billed. Tells a first-ever activation
+        -- from a return, independently of where the window happens to start.
+        MIN(r."startedAt") FILTER (WHERE ${normalizedMonthlyCents("r")} > 0) AS first_paid_at
+      FROM chain_roots r
+      GROUP BY r.root_id
+    ),
+    per_root_boundary AS (
+      SELECT
+        b.boundary,
+        r.root_id,
+        COALESCE(SUM(${normalizedMonthlyCents("r")}) FILTER (
+          WHERE ${liveAsOf("r", Prisma.raw("b.boundary"))}
+        ), 0) AS mrr
+      FROM boundaries b
+      CROSS JOIN chain_roots r
+      GROUP BY b.boundary, r.root_id
+    ),
+    stepped AS (
+      SELECT
+        p.boundary, p.root_id, p.mrr, f.first_paid_at,
+        LEAD(p.mrr)      OVER (PARTITION BY p.root_id ORDER BY p.boundary) AS next_mrr,
+        LEAD(p.boundary) OVER (PARTITION BY p.root_id ORDER BY p.boundary) AS next_boundary
+      FROM per_root_boundary p
+      JOIN root_facts f ON f.root_id = p.root_id
+    )
+    SELECT
+      to_char(st.boundary, 'YYYY-MM')                            AS month,
+      st.boundary                                                AS period_start,
+      MIN(st.next_boundary)                                      AS period_end,
+      (MIN(st.next_boundary) = st.boundary + INTERVAL '1 month') AS is_complete,
+      COALESCE(SUM(st.mrr), 0)::bigint                           AS starting_mrr_cents,
+      COALESCE(SUM(st.next_mrr), 0)::bigint                      AS ending_mrr_cents,
+      COALESCE(SUM(st.next_mrr) FILTER (
+        WHERE st.mrr = 0 AND st.next_mrr > 0 AND st.first_paid_at > st.boundary), 0)::bigint
+        AS new_mrr_cents,
+      COALESCE(SUM(st.next_mrr) FILTER (
+        WHERE st.mrr = 0 AND st.next_mrr > 0 AND st.first_paid_at <= st.boundary), 0)::bigint
+        AS reactivation_mrr_cents,
+      COALESCE(SUM(st.next_mrr - st.mrr) FILTER (
+        WHERE st.mrr > 0 AND st.next_mrr > st.mrr), 0)::bigint
+        AS expansion_mrr_cents,
+      COALESCE(SUM(st.mrr - st.next_mrr) FILTER (
+        WHERE st.mrr > 0 AND st.next_mrr < st.mrr AND st.next_mrr > 0), 0)::bigint
+        AS contraction_mrr_cents,
+      COALESCE(SUM(st.mrr) FILTER (
+        WHERE st.mrr > 0 AND st.next_mrr = 0), 0)::bigint
+        AS churned_mrr_cents,
+      COUNT(*) FILTER (WHERE st.mrr > 0)::int                    AS paying_chains_at_start
+    FROM stepped st
+    WHERE st.next_boundary IS NOT NULL
+    GROUP BY st.boundary
+    ORDER BY st.boundary ASC
+  `);
+
+  return rows.map((row) => {
+    const startingMRRCents = toNumber(row.starting_mrr_cents);
+    const expansionMRRCents = toNumber(row.expansion_mrr_cents);
+    const contractionMRRCents = toNumber(row.contraction_mrr_cents);
+    const churnedMRRCents = toNumber(row.churned_mrr_cents);
+    const retained = startingMRRCents + expansionMRRCents - contractionMRRCents - churnedMRRCents;
+    const gross = startingMRRCents - contractionMRRCents - churnedMRRCents;
+
+    return {
+      month: row.month,
+      periodStart: row.period_start,
+      periodEnd: row.period_end,
+      isComplete: row.is_complete,
+      startingMRRCents,
+      endingMRRCents: toNumber(row.ending_mrr_cents),
+      newMRRCents: toNumber(row.new_mrr_cents),
+      reactivationMRRCents: toNumber(row.reactivation_mrr_cents),
+      expansionMRRCents,
+      contractionMRRCents,
+      churnedMRRCents,
+      payingChainsAtStart: toNumber(row.paying_chains_at_start),
+      nrr: startingMRRCents === 0 ? null : retained / startingMRRCents,
+      grr: startingMRRCents === 0 ? null : gross / startingMRRCents,
+    };
+  });
+}
+
+interface ChurnTrendRow {
+  month: string;
+  start_at: Date;
+  end_at: Date;
+  is_complete: boolean;
+  active_at_start: NumericLike;
+  churned: NumericLike;
+}
+
+/**
+ * Subscription churn rate, month by month.
+ *
+ * Computed from Subscription, NOT from MetricSnapshot (collision C2). The snapshot
+ * rollup's churnedSubs counts EVERY cancellation in a day; getChurnRate counts only
+ * cancellations of segments that were already live at the period start. Those are
+ * different numbers — a subscription that starts and cancels inside the same month is
+ * in the snapshot figure and in neither period's cohort — so a snapshot-derived churn
+ * rate would sit on the Retention page contradicting getChurnRate on the Overview.
+ * This reproduces getChurnRate's cohort attribution exactly, once per month, so
+ * getChurnRateTrend(org)[i] equals getChurnRate(org, { kind: "range", start, end })
+ * for that month's boundaries.
+ *
+ * Month windows follow the C3 convention: (month start, next month start], contiguous
+ * and gapless, so a cancellation lands in exactly one month and never in two.
+ *
+ * activeAtStart counts SEGMENTS, not customers — see the CHAIN VS SEGMENT note on
+ * RevenueMovementPoint. It is the same denominator getChurnRate uses and includes
+ * FREE-tier segments, because this measures subscription churn, not revenue churn.
+ *
+ * Unlike getRevenueMovement, an org with no subscriptions still yields one row per
+ * month with `rate: null`. A churn chart of explicit "undefined" months is honest; an
+ * empty array would be indistinguishable from "the query failed".
+ *
+ * `months <= 0` => `[]`.
+ */
+export async function getChurnRateTrend(
+  organizationId: string,
+  months: number = DEFAULT_TREND_MONTHS,
+  asOf: Date = new Date(),
+): Promise<ChurnRateTrendPoint[]> {
+  const span = clampMonths(months);
+  if (span === 0) return [];
+  const window = monthWindow(span, asOf);
+
+  const liveAtStart = liveAsOf("s", Prisma.raw("w.start_at"));
+
+  const rows = await prisma.$queryRaw<ChurnTrendRow[]>(Prisma.sql`
+    WITH ${monthBoundariesCte(window)},
+    windows AS (
+      SELECT
+        boundary AS start_at,
+        LEAD(boundary) OVER (ORDER BY boundary) AS end_at
+      FROM boundaries
+    )
+    SELECT
+      to_char(w.start_at, 'YYYY-MM')                        AS month,
+      w.start_at                                            AS start_at,
+      w.end_at                                              AS end_at,
+      (w.end_at = w.start_at + INTERVAL '1 month')          AS is_complete,
+      COUNT(s.id) FILTER (WHERE ${liveAtStart})::int        AS active_at_start,
+      COUNT(s.id) FILTER (
+        WHERE ${liveAtStart}
+          AND s."canceledAt" IS NOT NULL
+          AND s."canceledAt" > w.start_at
+          AND s."canceledAt" <= w.end_at
+      )::int                                                AS churned
+    FROM windows w
+    LEFT JOIN "Subscription" s ON s."organizationId" = ${organizationId}
+    WHERE w.end_at IS NOT NULL
+    GROUP BY w.start_at, w.end_at
+    ORDER BY w.start_at ASC
+  `);
+
+  return rows.map((row) => {
+    const activeAtStart = toNumber(row.active_at_start);
+    const churned = toNumber(row.churned);
+    return {
+      month: row.month,
+      period: { start: row.start_at, end: row.end_at },
+      isComplete: row.is_complete,
+      activeAtStart,
+      churned,
+      rate: activeAtStart === 0 ? null : churned / activeAtStart,
+    };
+  });
+}
+
+interface InvoiceTotalsRow {
+  currency: string;
+  status: InvoiceStatus;
+  issued_count: NumericLike;
+  issued_cents: NumericLike;
+  collected_cents: NumericLike;
+  outstanding_cents: NumericLike;
+}
+
+/**
+ * Collected vs outstanding invoice money for a period.
+ *
+ * The two headline figures are deliberately measured on DIFFERENT populations, because
+ * they answer different questions and conflating them is how a dashboard ends up
+ * claiming it collected money it merely billed:
+ *
+ *   - collectedCents is a FLOW, bucketed by paidAt in (start, end]. Cash that arrived
+ *     during the period, whenever the invoice was raised. An invoice issued in March
+ *     and paid in April is April's collection.
+ *   - outstandingCents is a STOCK, every OPEN invoice issued at or before period.end.
+ *     It deliberately reaches back before the period: an unpaid invoice from two months
+ *     ago is still outstanding today, and dropping it would understate the balance.
+ *   - issuedCents and byStatus cover invoices ISSUED in (start, end] — the period's own
+ *     billing, whatever became of it.
+ *
+ * One grouped scan over the org's invoices with FILTERed aggregates; the folding in JS
+ * runs over at most (currencies x statuses) rows, never over invoices.
+ *
+ * Tenant filter applied twice, as in getInvoices: on Invoice directly and again on the
+ * joined Subscription, so a mis-parented invoice cannot leak across orgs.
+ *
+ * No invoices => zeroes, default currency, empty byStatus.
+ */
+export async function getInvoiceTotals(
+  organizationId: string,
+  period: Period,
+): Promise<InvoiceTotals> {
+  const resolved = resolvePeriod(period);
+  const startTs = ts(resolved.start);
+  const endTs = ts(resolved.end);
+
+  const issuedInPeriod = Prisma.sql`i."issuedAt" > ${startTs} AND i."issuedAt" <= ${endTs}`;
+
+  const rows = await prisma.$queryRaw<InvoiceTotalsRow[]>(Prisma.sql`
+    SELECT
+      i.currency AS currency,
+      i.status   AS status,
+      COUNT(*) FILTER (WHERE ${issuedInPeriod})::int AS issued_count,
+      COALESCE(SUM(i."amountCents") FILTER (WHERE ${issuedInPeriod}), 0)::bigint
+        AS issued_cents,
+      COALESCE(SUM(i."amountCents") FILTER (
+        WHERE i.status = 'PAID'::"InvoiceStatus"
+          AND i."paidAt" IS NOT NULL
+          AND i."paidAt" > ${startTs}
+          AND i."paidAt" <= ${endTs}
+      ), 0)::bigint AS collected_cents,
+      COALESCE(SUM(i."amountCents") FILTER (
+        WHERE i.status = 'OPEN'::"InvoiceStatus"
+          AND i."issuedAt" <= ${endTs}
+      ), 0)::bigint AS outstanding_cents
+    FROM "Invoice" i
+    JOIN "Subscription" s
+      ON s.id = i."subscriptionId"
+     AND s."organizationId" = ${organizationId}
+    WHERE i."organizationId" = ${organizationId}
+    GROUP BY i.currency, i.status
+  `);
+
+  let collectedCents = 0;
+  let outstandingCents = 0;
+  let issuedCents = 0;
+  const byStatus = new Map<InvoiceStatus, { count: number; amountCents: number }>();
+  const currencyWeight = new Map<string, number>();
+
+  for (const row of rows) {
+    const collected = toNumber(row.collected_cents);
+    const outstanding = toNumber(row.outstanding_cents);
+    const issued = toNumber(row.issued_cents);
+    const count = toNumber(row.issued_count);
+
+    collectedCents += collected;
+    outstandingCents += outstanding;
+    issuedCents += issued;
+
+    if (count > 0) {
+      const entry = byStatus.get(row.status) ?? { count: 0, amountCents: 0 };
+      entry.count += count;
+      entry.amountCents += issued;
+      byStatus.set(row.status, entry);
+    }
+
+    const weight = collected + outstanding + issued;
+    if (weight > 0) {
+      currencyWeight.set(row.currency, (currencyWeight.get(row.currency) ?? 0) + weight);
+    }
+  }
+
+  // Largest contributing currency, like getMRR. No FX rates exist in the schema, so a
+  // mixed-currency org gets a flag rather than a silently wrong sum.
+  const currencies = [...currencyWeight.entries()].sort((a, b) => b[1] - a[1]);
+
+  return {
+    organizationId,
+    period: resolved,
+    currency: currencies[0]?.[0] ?? DEFAULT_CURRENCY,
+    isMixedCurrency: currencies.length > 1,
+    collectedCents,
+    outstandingCents,
+    issuedCents,
+    byStatus: [...byStatus.entries()]
+      .map(([status, v]) => ({ status, count: v.count, amountCents: v.amountCents }))
+      .sort((a, b) => b.amountCents - a.amountCents),
   };
 }
