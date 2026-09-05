@@ -61,6 +61,36 @@ const STATUS_CLASS: Record<InvoiceStatus, string> = {
 const AMOUNT_PINNED =
   "@max-[34rem]:sticky @max-[34rem]:right-0 @max-[34rem]:border-l @max-[34rem]:border-border @max-[34rem]:bg-card";
 
+/**
+ * What makes the pinning above dependable rather than a Chrome coincidence.
+ *
+ * Tailwind's preflight sets `border-collapse: collapse` on every table, and in
+ * the collapsed model a border belongs to the EDGE between two cells rather than
+ * to either cell. A cell that pins itself is then asking the engine to move a box
+ * whose borders it does not own, and engines have never agreed on the answer —
+ * this is the long-standing reason sticky table columns drop their rules, smear,
+ * or fail to stick outside the engine they were built in. A `@supports` query
+ * cannot guard it: every engine reports `position: sticky` as supported, and the
+ * disagreement is about the collapsed border model, not about sticky.
+ *
+ * The separated model gives every cell its own borders, which is what makes a
+ * pinned cell behave the same everywhere. `border-spacing-0` closes the gutters
+ * the separated model would otherwise open between cells, so every column edge
+ * stays exactly where it was; the one thing that does move is each row rule,
+ * which now sits flush against its own row instead of a pixel lower, where the
+ * collapsed model's half-pixel rounding used to push it.
+ *
+ * The rules move onto the cells because borders on `tr` are ignored outright once
+ * borders are separated. Expressed as descendant variants on the table rather
+ * than a `border-b` repeated on ten cells, so a column added later cannot forget
+ * the rule — the same idiom shadcn's own `Table` uses for `[&_tr]:border-b`. The
+ * last-row exception restates `TableBody`'s `[&_tr:last-child]:border-0` in cell
+ * terms: the card's own edge closes the table, so a rule under the final row
+ * would double it.
+ */
+const TABLE_SEPARATED =
+  "border-separate border-spacing-0 [&_th]:border-b [&_td]:border-b [&_tbody_tr:last-child>td]:border-b-0";
+
 export function InvoiceTable({ invoices, empty }: InvoiceTableProps) {
   if (invoices.length === 0) {
     // `undefined` means "no override", which is distinct from an override of
@@ -82,7 +112,7 @@ export function InvoiceTable({ invoices, empty }: InvoiceTableProps) {
     // this element, rather than `Table`'s own scroll container, because the
     // container query has to be declared outside the element it sizes.
     <div className="@container">
-      <Table>
+      <Table className={TABLE_SEPARATED}>
         <TableHeader>
           <TableRow className="border-border hover:bg-transparent">
             <TableHead className="h-9 pl-4 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase">
