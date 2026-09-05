@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { InvoiceStatus } from "@prisma/client";
 import { Receipt } from "lucide-react";
 
@@ -17,6 +18,14 @@ import { EmptyState } from "@/components/dashboard/empty-state";
 
 interface InvoiceTableProps {
   invoices: RecentInvoice[];
+  /**
+   * Replaces the first-run empty state when a FILTER, rather than the absence of
+   * data, produced zero rows. "No invoices yet" is wrong copy for a workspace
+   * that has hundreds of them and none that are open.
+   *
+   * Optional: the overview passes nothing and keeps the first-run wording.
+   */
+  empty?: ReactNode;
 }
 
 /**
@@ -32,8 +41,32 @@ const STATUS_CLASS: Record<InvoiceStatus, string> = {
   UNCOLLECTIBLE: "bg-negative/12 text-negative",
 };
 
-export function InvoiceTable({ invoices }: InvoiceTableProps) {
+/**
+ * The amount column, pinned to the right edge of the table's scroll container.
+ *
+ * Plan, Issued and Status need about 450px between them before Amount is even
+ * reached, so on a phone the table is wider than the card it sits in. The shadcn
+ * `Table` already wraps itself in `overflow-x-auto`, so that width is reachable —
+ * but only by scrolling, and at rest it puts the last column past the card's
+ * edge. A figure that stops at "$999." does not read as "scroll for the rest"; it
+ * reads as a broken number. Pinning it keeps the money whole at every width and
+ * lets the columns the reader can infer scroll underneath it.
+ *
+ * Scoped to the CONTAINER, not the viewport. How much room this table has is not
+ * the same question as how wide the phone is: the same component renders full
+ * width on the revenue page and in a fractional grid column on the overview.
+ * Above the threshold the cell is an ordinary one, so a wide layout keeps the row
+ * hover unbroken by the pinned cell's own background.
+ */
+const AMOUNT_PINNED =
+  "@max-[34rem]:sticky @max-[34rem]:right-0 @max-[34rem]:border-l @max-[34rem]:border-border @max-[34rem]:bg-card";
+
+export function InvoiceTable({ invoices, empty }: InvoiceTableProps) {
   if (invoices.length === 0) {
+    // `undefined` means "no override", which is distinct from an override of
+    // `null` — the latter would be a caller deliberately rendering nothing.
+    if (empty !== undefined) return <>{empty}</>;
+
     return (
       <EmptyState
         icon={Receipt}
@@ -45,63 +78,78 @@ export function InvoiceTable({ invoices }: InvoiceTableProps) {
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow className="border-border hover:bg-transparent">
-          <TableHead className="h-9 pl-4 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase">
-            Plan
-          </TableHead>
-          <TableHead className="hidden h-9 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase sm:table-cell">
-            Reference
-          </TableHead>
-          <TableHead className="h-9 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase">
-            Issued
-          </TableHead>
-          <TableHead className="h-9 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase">
-            Status
-          </TableHead>
-          <TableHead className="h-9 pr-4 text-right font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase">
-            Amount
-          </TableHead>
-        </TableRow>
-      </TableHeader>
-
-      <TableBody>
-        {invoices.map((invoice) => (
-          <TableRow key={invoice.id} className="border-border">
-            <TableCell className="py-2.5 pl-4">
-              <span className="font-medium text-foreground">
-                {formatEnumLabel(invoice.subscription.tier)}
-              </span>
-              <span className="ml-1.5 text-xs text-muted-foreground">
-                {formatEnumLabel(invoice.subscription.interval)}
-              </span>
-            </TableCell>
-
-            <TableCell className="hidden py-2.5 font-mono text-xs text-muted-foreground sm:table-cell">
-              {/* The tail of the id — enough to quote to support, short enough to read. */}
-              {invoice.id.slice(-8)}
-            </TableCell>
-
-            <TableCell className="py-2.5 font-mono text-xs text-muted-foreground">
-              {formatDay(invoice.issuedAt)}
-            </TableCell>
-
-            <TableCell className="py-2.5">
-              <Badge
-                variant="secondary"
-                className={cn("font-medium", STATUS_CLASS[invoice.status])}
-              >
-                {formatEnumLabel(invoice.status)}
-              </Badge>
-            </TableCell>
-
-            <TableCell className="py-2.5 pr-4 text-right font-mono text-foreground tabular-nums">
-              {formatMoneyExact(invoice.amountCents, invoice.currency)}
-            </TableCell>
+    // The query context the pinned amount column measures itself against. It is
+    // this element, rather than `Table`'s own scroll container, because the
+    // container query has to be declared outside the element it sizes.
+    <div className="@container">
+      <Table>
+        <TableHeader>
+          <TableRow className="border-border hover:bg-transparent">
+            <TableHead className="h-9 pl-4 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+              Plan
+            </TableHead>
+            <TableHead className="hidden h-9 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase sm:table-cell">
+              Reference
+            </TableHead>
+            <TableHead className="h-9 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+              Issued
+            </TableHead>
+            <TableHead className="h-9 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+              Status
+            </TableHead>
+            <TableHead
+              className={cn(
+                "h-9 pr-4 text-right font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase",
+                AMOUNT_PINNED,
+              )}
+            >
+              Amount
+            </TableHead>
           </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+        </TableHeader>
+
+        <TableBody>
+          {invoices.map((invoice) => (
+            <TableRow key={invoice.id} className="border-border">
+              <TableCell className="py-2.5 pl-4">
+                <span className="font-medium text-foreground">
+                  {formatEnumLabel(invoice.subscription.tier)}
+                </span>
+                <span className="ml-1.5 text-xs text-muted-foreground">
+                  {formatEnumLabel(invoice.subscription.interval)}
+                </span>
+              </TableCell>
+
+              <TableCell className="hidden py-2.5 font-mono text-xs text-muted-foreground sm:table-cell">
+                {/* The tail of the id — enough to quote to support, short enough to read. */}
+                {invoice.id.slice(-8)}
+              </TableCell>
+
+              <TableCell className="py-2.5 font-mono text-xs text-muted-foreground">
+                {formatDay(invoice.issuedAt)}
+              </TableCell>
+
+              <TableCell className="py-2.5">
+                <Badge
+                  variant="secondary"
+                  className={cn("font-medium", STATUS_CLASS[invoice.status])}
+                >
+                  {formatEnumLabel(invoice.status)}
+                </Badge>
+              </TableCell>
+
+              <TableCell
+                className={cn(
+                  "py-2.5 pr-4 text-right font-mono text-foreground tabular-nums",
+                  AMOUNT_PINNED,
+                )}
+              >
+                {formatMoneyExact(invoice.amountCents, invoice.currency)}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   );
 }

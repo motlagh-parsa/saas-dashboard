@@ -46,6 +46,15 @@
   --color-tier-3: var(--tier-3);
   --color-tier-4: var(--tier-4);
   --color-chart-grid: var(--chart-grid);
+
+  /* Diverging direction scale — the revenue bridge. See :root for the reasoning. */
+  --color-movement-up: var(--movement-up);
+  --color-movement-down: var(--movement-down);
+  --color-movement-up-soft: var(--movement-up-soft);
+  --color-movement-down-soft: var(--movement-down-soft);
+  --color-movement-flat: var(--movement-flat);
+  --color-balance-fill: var(--balance-fill);
+  --color-balance-rule: var(--balance-rule);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -132,6 +141,37 @@
   --tier-3: oklch(0.53 0.125 74);
   --tier-4: oklch(0.46 0.125 74);
 
+  /*
+    Revenue bridge — a DIVERGING scale, not a categorical one.
+
+    A waterfall's whole meaning is gain versus loss around a running baseline, so
+    colour follows DIRECTION and never the movement's category. The textbook
+    green/red pair is unusable in this theme: simulated against the dark card,
+    emerald and rose measure ΔE 3.2 under deuteranopia — the readability floor is
+    6 — and red-green colour blindness is roughly 8% of men. The cool STEEL
+    already in the categorical ramp measures ΔE 14.1 deutan (27.9 normal) against
+    the same rose, so steel carries "increase". Same two hues in both themes.
+
+    The trailing month is still open, so it is drawn in a SOFT variant of its own
+    direction hue. "Soft" always means "closer to the surface", which is lighter
+    on paper and darker on the terminal — never a different hue.
+
+    A month that did not move gets a neutral hairline: a zero-height bar is
+    indistinguishable from a missing one, and "no change" is not "no data".
+
+    Balance columns are NOT a third colour. A neutral grey fails against steel for
+    protanopes (ΔE 4.2), so the totals are separated by FORM instead — they alone
+    sit on the zero line, and they alone are hatched with `--balance-rule` over
+    `--balance-fill`.
+  */
+  --movement-up: oklch(0.6 0.1 210);
+  --movement-down: oklch(0.62 0.17 24);
+  --movement-up-soft: oklch(0.79 0.055 210);
+  --movement-down-soft: oklch(0.8 0.085 24);
+  --movement-flat: oklch(0.55 0.012 260);
+  --balance-fill: oklch(0.9 0.006 260);
+  --balance-rule: oklch(0.7 0.012 260);
+
   /* Chart chrome. The grid must never compete with the data. */
   --chart-grid: oklch(0.915 0.004 260);
 
@@ -198,6 +238,20 @@
   --tier-2: oklch(0.615 0.083 78);
   --tier-3: oklch(0.71 0.106 78);
   --tier-4: oklch(0.8 0.13 78);
+
+  /*
+    The direction scale on graphite. Same two hues as paper — steel #43afc1 and
+    rose #fa686a — brightened for the dark surface. The soft variants move TOWARD
+    the card rather than away from it, so "still open" reads as a quieter version
+    of the same direction instead of a new one.
+  */
+  --movement-up: oklch(0.7 0.1 210);
+  --movement-down: oklch(0.7 0.17 22);
+  --movement-up-soft: oklch(0.5 0.06 210);
+  --movement-down-soft: oklch(0.5 0.1 22);
+  --movement-flat: oklch(0.65 0.012 260);
+  --balance-fill: oklch(0.3 0.01 260);
+  --balance-rule: oklch(0.48 0.012 260);
 
   --chart-grid: oklch(1 0 0 / 7%);
 
