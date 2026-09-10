@@ -211,6 +211,52 @@ export function formatDay(value: Date): string {
 }
 
 // ---------------------------------------------------------------------------
+// People and labels — a name is optional in the schema, an email never is
+// ---------------------------------------------------------------------------
+
+/** Splits on the separators a display name or a handle actually uses. */
+const NAME_SEPARATORS = /[\s._+-]+/;
+
+/**
+ * The name to print for a person.
+ *
+ * `User.name` is nullable — an OAuth account can arrive without one, and a
+ * credentials user is created from an email alone. `User.email` is not nullable,
+ * so the local part of the address is the fallback: it is the closest thing to a
+ * chosen name the record actually holds, and it never renders as blank.
+ *
+ * Never returns an empty string. A row with no legible identity is worse than a
+ * row that admits it has none.
+ */
+export function formatPersonName(name: string | null, email: string): string {
+  const trimmed = name?.trim();
+  if (trimmed) return trimmed;
+
+  const local = email.split("@")[0]?.trim();
+  if (local) return local;
+
+  return email.trim() || "Unnamed member";
+}
+
+/**
+ * Up to two initials for an avatar fallback: `"Ada Lovelace"` -> `"AL"`,
+ * `"ada.lovelace"` -> `"AL"`, `"northwind"` -> `"N"`.
+ *
+ * Takes an already-resolved label rather than a name/email pair, so the same
+ * function serves a person (via `formatPersonName`) and a workspace, and neither
+ * caller has to know how the other resolves its source string.
+ */
+export function formatInitials(source: string): string {
+  const words = source.trim().split(NAME_SEPARATORS).filter(Boolean);
+  if (words.length === 0) return "?";
+
+  const first = words[0]?.charAt(0) ?? "";
+  const last = words.length > 1 ? (words[words.length - 1]?.charAt(0) ?? "") : "";
+
+  return `${first}${last}`.toUpperCase() || "?";
+}
+
+// ---------------------------------------------------------------------------
 // Enum labels — the database speaks SCREAMING_CASE, the interface does not
 // ---------------------------------------------------------------------------
 
