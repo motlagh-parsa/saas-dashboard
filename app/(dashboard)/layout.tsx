@@ -1,12 +1,16 @@
-// Presentational shell for the authenticated app. It renders no session and
-// queries no data — each protected page gates itself. Org name and user identity
-// below are PLACEHOLDERS; wiring real session/tenant data is a follow-up for
-// nextjs-architect / db-architect.
-import { Bell, Building2, ChevronsUpDown, Search } from "lucide-react";
+// Shell for the authenticated app. It stays a Server Component: the only data it
+// reads is the session, purely so the account menu can show who is signed in.
+// Authorization is NOT done here — each protected page calls `requireSession()`.
+// Org name below is still a PLACEHOLDER; tenant wiring is a db-architect follow-up.
+import { getServerSession } from "next-auth/next";
 
+import { authOptions } from "@/lib/auth";
 import { Separator } from "@/components/ui/separator";
 import { BrandMark } from "@/components/dashboard/brand-mark";
+import { CommandPalette } from "@/components/dashboard/command-palette";
 import { MobileNav } from "@/components/dashboard/mobile-nav";
+import { NotificationsMenu } from "@/components/dashboard/notifications-menu";
+import { OrgSwitcher } from "@/components/dashboard/org-switcher";
 import { SidebarNav } from "@/components/dashboard/sidebar-nav";
 import { ThemeToggle } from "@/components/dashboard/theme-toggle";
 import { UserMenu } from "@/components/dashboard/user-menu";
@@ -14,9 +18,11 @@ import { UserMenu } from "@/components/dashboard/user-menu";
 // PLACEHOLDER — real tenant comes from the session/org context later.
 const ORG_NAME = "Northwind Labs";
 
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const session = await getServerSession(authOptions);
+
   return (
     <div className="flex min-h-svh w-full">
       {/* Desktop rail */}
@@ -44,38 +50,14 @@ export default function DashboardLayout({
             <BrandMark showWordmark={false} />
           </div>
 
-          <button
-            type="button"
-            aria-label={`Switch workspace — currently ${ORG_NAME}`}
-            className="hidden h-9 items-center gap-2 rounded-md px-2 text-sm font-medium outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring md:flex"
-          >
-            <Building2 className="size-4 text-muted-foreground" />
-            <span className="max-w-40 truncate">{ORG_NAME}</span>
-            <ChevronsUpDown className="size-3.5 text-muted-foreground" />
-          </button>
+          <OrgSwitcher name={ORG_NAME} className="hidden md:flex" />
 
           <div className="ml-auto flex items-center gap-1">
-            {/* Command palette trigger — pending ⌘K wiring (follow-up). */}
-            <button
-              type="button"
-              aria-label="Search"
-              className="hidden h-9 w-64 items-center gap-2 rounded-md border border-input bg-muted/40 px-2.5 text-sm text-muted-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring lg:flex"
-            >
-              <Search className="size-4" />
-              <span>Search customers, reports…</span>
-              <kbd className="ml-auto inline-flex items-center gap-0.5 rounded border border-border bg-background px-1.5 font-mono text-[0.625rem] text-muted-foreground">
-                ⌘K
-              </kbd>
-            </button>
+            {/* Command palette: trigger + ⌘K dialog. */}
+            <CommandPalette />
 
-            <button
-              type="button"
-              aria-label="Notifications, 3 unread"
-              className="relative hidden size-9 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring md:inline-flex"
-            >
-              <Bell className="size-4" />
-              <span className="absolute top-2 right-2 size-2 rounded-full bg-brand ring-2 ring-background" />
-            </button>
+            {/* Bell: opens a peek at the inbox, anchored to the trigger. */}
+            <NotificationsMenu className="hidden md:inline-flex" />
 
             <ThemeToggle className="hidden md:inline-flex" />
 
@@ -84,7 +66,11 @@ export default function DashboardLayout({
               className="mx-1 hidden !h-5 self-center md:block"
             />
 
-            <UserMenu />
+            <UserMenu
+              name={session?.user?.name ?? null}
+              email={session?.user?.email ?? null}
+              image={session?.user?.image ?? null}
+            />
           </div>
         </header>
 

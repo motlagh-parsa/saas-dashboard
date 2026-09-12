@@ -23,9 +23,10 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  accounts    Account[]
-  sessions    Session[]
-  memberships Membership[]
+  accounts      Account[]
+  sessions      Session[]
+  memberships   Membership[]
+  notifications Notification[]
 }
 
 model Account {
@@ -81,6 +82,7 @@ model Organization {
   subscriptions Subscription[]
   invoices      Invoice[]
   snapshots     MetricSnapshot[]
+  notifications Notification[]
 }
 
 model Membership {
@@ -192,6 +194,52 @@ model MetricSnapshot {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, date])
+}
+
+// ---------------------------------------------------------------------------
+// Notification feed — operational events raised against a tenant.
+//
+// `userId = NULL` means the notification is ORG-WIDE (everyone in the workspace
+// sees it); a set `userId` means it is PERSONAL to that member. Read state is a
+// nullable timestamp rather than a boolean so "when was this read" survives —
+// `readAt IS NULL` is the unread predicate everywhere.
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id             String           @id @default(cuid())
+  organizationId String
+  userId         String?
+  type           NotificationType
+  title          String
+  body           String
+  readAt         DateTime?
+  createdAt      DateTime         @default(now())
+
+  // Cascade: a notification is meaningless without the tenant that raised it, and
+  // the feed is derived operational data, not a record anyone audits after the
+  // workspace is gone.
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // SetNull, not Cascade: deleting a member must not delete the org's event
+  // history — the notification simply reverts to org-wide.
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // The feed query: tenant-scoped, optionally filtered to unread, always ordered
+  // by createdAt desc. Serves getNotifications(), getUnreadCount() (the
+  // organizationId+readAt prefix), and the Organization cascade-delete FK.
+  @@index([organizationId, readAt, createdAt])
+  // Per-member fan-out: "this user's unread items", and the User SetNull FK.
+  @@index([userId, readAt])
+}
+
+enum NotificationType {
+  MRR_MILESTONE
+  INVOICE_PAID
+  INVOICE_OVERDUE
+  CHURN_ALERT
+  MEMBER_JOINED
+  REVENUE_DIP
+  REPORT_READY
+  SYSTEM
 }
 
 // ---------------------------------------------------------------------------

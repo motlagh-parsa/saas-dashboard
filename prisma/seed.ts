@@ -39,6 +39,11 @@
  *                    that ramps up deterministically over the life of the segment.
  *   - newUsers     = max(0, activeUsers(day) - activeUsers(day - 1)); net seats added.
  *
+ * Notifications are the one AUTHORED table here: operational events for the demo
+ * org, written last, reconciling against nothing. Their timestamps still derive
+ * from the same anchor as everything else, so the feed stays inside the last 14
+ * days on every run.
+ *
  * Determinism: no Math.random() is used. Any per-segment "jitter" is a pure function
  * of stable inputs (org slug + tier + start date), so re-running produces identical
  * numbers. The run first clears seed-owned tables in FK-safe order, so it is idempotent.
@@ -60,6 +65,7 @@ import type {
   BillingInterval,
   SubscriptionStatus,
   InvoiceStatus,
+  NotificationType,
   Role,
 } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -85,6 +91,7 @@ const prisma = new PrismaClient({ adapter });
 // ---------------------------------------------------------------------------
 
 const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
 
 function addMonthsUTC(base: Date, months: number): Date {
   return new Date(
@@ -445,12 +452,203 @@ export function computeSnapshots(
 }
 
 // ---------------------------------------------------------------------------
+// Notification feed (demo org only).
+//
+// These are OPERATIONAL EVENTS, not derived metrics: unlike MetricSnapshot, they
+// are authored rather than computed, so they are written last and nothing else
+// reconciles against them. Every amount and plan tier in the copy below is still
+// taken from the seeded price list ($49 Starter / $199 Pro / $999 Enterprise /
+// $2,148 annual Pro) and the demo org's own MRR, so nothing contradicts a number
+// the dashboard can show. The customer names are intentionally NOT other seeded
+// organizations: those are separate tenants, and one tenant's feed must never
+// look like it is quoting another tenant's ledger.
+//
+// `userId = null` is an ORG-WIDE notification (everyone in the workspace sees
+// it); a set `userId` is personal to the demo user.
+//
+// Timestamps are relative to ANCHOR (UTC midnight of the seed's anchor day), so
+// the feed moves with the rest of the window and stays deterministic under
+// SEED_ANCHOR_DATE. Every createdAt lands inside the last 14 days, and every
+// readAt is strictly after its own createdAt and never in the future.
+// ---------------------------------------------------------------------------
+
+/** "Now" for the feed: the same UTC midnight every other window constant uses. */
+const FEED_NOW = ANCHOR;
+
+/** Days of history the notification feed spans. Every spec must fit inside it. */
+const FEED_WINDOW_DAYS = 14;
+
+/** Exactly this many specs must be left unread — asserted after the write. */
+const EXPECTED_UNREAD = 3;
+
+function addHoursUTC(base: Date, hours: number): Date {
+  return new Date(base.getTime() + hours * HOUR_MS);
+}
+
+interface NotificationSpec {
+  type: NotificationType;
+  title: string;
+  body: string;
+  /** true => personal to the demo user; false => org-wide (userId null). */
+  personal: boolean;
+  /** Hours before FEED_NOW that the event was raised. */
+  hoursAgo: number;
+  /** null => still unread. Otherwise hours AFTER createdAt that it was read. */
+  readAfterHours: number | null;
+}
+
+/**
+ * Newest first. The three most recent are unread, which matches how an operator
+ * actually works down an inbox — and gives the bell a non-zero count without
+ * making the whole feed look untouched.
+ *
+ * All 8 NotificationType values appear; INVOICE_PAID and SYSTEM repeat, because
+ * those are genuinely the two highest-volume events in a real feed.
+ */
+const NOTIFICATION_SPECS: NotificationSpec[] = [
+  {
+    type: "MRR_MILESTONE",
+    title: "MRR milestone reached",
+    body: "Recurring revenue crossed $1,000 for the first time after the Enterprise upgrade.",
+    personal: false,
+    hoursAgo: 2,
+    readAfterHours: null,
+  },
+  {
+    type: "INVOICE_OVERDUE",
+    title: "Invoice overdue",
+    body: "The Enterprise plan invoice for $999.00 is 6 days past due and payment retries have stopped.",
+    personal: true,
+    hoursAgo: 5,
+    readAfterHours: null,
+  },
+  {
+    type: "CHURN_ALERT",
+    title: "Churn alert",
+    body: "Bell & Co cancelled their Pro subscription. $199.00 of MRR ends with the current period.",
+    personal: false,
+    hoursAgo: 21,
+    readAfterHours: null,
+  },
+  {
+    type: "INVOICE_PAID",
+    title: "Invoice paid",
+    body: "Redwood Health settled their Pro plan invoice for $199.00.",
+    personal: false,
+    hoursAgo: 33,
+    readAfterHours: 3,
+  },
+  {
+    type: "MEMBER_JOINED",
+    title: "Priya Raman joined the workspace",
+    body: "Priya accepted your invite and now has the Member role.",
+    personal: true,
+    hoursAgo: 52,
+    readAfterHours: 2,
+  },
+  {
+    type: "REVENUE_DIP",
+    title: "Revenue dip detected",
+    body: "MRR fell 12% week over week, driven by two downgrades from Pro to Starter.",
+    personal: false,
+    hoursAgo: 78,
+    readAfterHours: 5,
+  },
+  {
+    type: "REPORT_READY",
+    title: "Monthly revenue report ready",
+    body: "Your revenue and retention summary for last month is ready to download.",
+    personal: true,
+    hoursAgo: 101,
+    readAfterHours: 9,
+  },
+  {
+    type: "SYSTEM",
+    title: "Nightly backup completed",
+    body: "The scheduled database backup finished in 42 seconds with no errors.",
+    personal: false,
+    hoursAgo: 149,
+    readAfterHours: 14,
+  },
+  {
+    type: "INVOICE_PAID",
+    title: "Annual invoice paid",
+    body: "Lumen Freight renewed on the annual Pro plan — $2,148.00 collected.",
+    personal: false,
+    hoursAgo: 197,
+    readAfterHours: 6,
+  },
+  {
+    type: "SYSTEM",
+    title: "API rate limit raised",
+    body: "This workspace can now make 10,000 API requests per minute.",
+    personal: false,
+    hoursAgo: 268,
+    readAfterHours: 20,
+  },
+];
+
+/**
+ * Writes the demo org's notification feed. Returns how many rows were created.
+ *
+ * Scoped to ONE organization on purpose: the feed is what the signed-in demo
+ * operator sees, and fanning identical copies out to all eight tenants would make
+ * the org filter look decorative when it is the security boundary.
+ */
+async function seedNotifications(
+  organizationId: string,
+  demoUserId: string,
+): Promise<number> {
+  const rows: Prisma.NotificationCreateManyInput[] = NOTIFICATION_SPECS.map((spec) => {
+    if (spec.hoursAgo < 0 || spec.hoursAgo > FEED_WINDOW_DAYS * 24) {
+      throw new Error(
+        `Notification "${spec.title}" is ${spec.hoursAgo}h old, outside the ${FEED_WINDOW_DAYS}-day feed window.`,
+      );
+    }
+    if (spec.readAfterHours !== null && spec.readAfterHours > spec.hoursAgo) {
+      throw new Error(
+        `Notification "${spec.title}" would be read in the future (readAfterHours > hoursAgo).`,
+      );
+    }
+
+    const createdAt = addHoursUTC(FEED_NOW, -spec.hoursAgo);
+
+    return {
+      organizationId,
+      userId: spec.personal ? demoUserId : null,
+      type: spec.type,
+      title: spec.title,
+      body: spec.body,
+      createdAt,
+      readAt:
+        spec.readAfterHours === null ? null : addHoursUTC(createdAt, spec.readAfterHours),
+    };
+  });
+
+  await prisma.notification.createMany({ data: rows });
+
+  const unread = await prisma.notification.count({
+    where: { organizationId, readAt: null },
+  });
+  if (unread !== EXPECTED_UNREAD) {
+    throw new Error(
+      `Invariant violated: expected ${EXPECTED_UNREAD} unread notifications, found ${unread}.`,
+    );
+  }
+
+  return rows.length;
+}
+
+// ---------------------------------------------------------------------------
 // Seed run.
 // ---------------------------------------------------------------------------
 
 async function clearSeedData(): Promise<void> {
   // FK-safe order: children before parents. Wrapped so a re-run is all-or-nothing.
+  // Notification would cascade from Organization anyway, but it is listed
+  // explicitly so this stays a complete inventory of the tables the seed owns.
   await prisma.$transaction([
+    prisma.notification.deleteMany(),
     prisma.metricSnapshot.deleteMany(),
     prisma.invoice.deleteMany(),
     prisma.subscription.deleteMany(),
@@ -471,6 +669,9 @@ async function main(): Promise<void> {
 
   const invoiceRows: Prisma.InvoiceCreateManyInput[] = [];
   let churnEventCount = 0;
+  // The org the demo user OWNS (spec index 0) — the workspace the dashboard opens
+  // on, and the only one that gets a notification feed.
+  let demoOrgId: string | null = null;
 
   for (let orgIndex = 0; orgIndex < ORG_SPECS.length; orgIndex++) {
     const spec = ORG_SPECS[orgIndex];
@@ -482,6 +683,7 @@ async function main(): Promise<void> {
 
     // Demo user owns the first org and is a member of the rest (tenant switching).
     const role: Role = orgIndex === 0 ? "OWNER" : "MEMBER";
+    if (orgIndex === 0) demoOrgId = org.id;
     await prisma.membership.create({
       data: {
         userId: demoUser.id,
@@ -671,6 +873,19 @@ async function main(): Promise<void> {
   if (totalChurnedSubs <= 0) {
     throw new Error("Invariant violated: total churnedSubs must be > 0.");
   }
+
+  // ---- Notification feed -------------------------------------------------
+  // LAST, deliberately. It depends on both the demo user and the demo org
+  // already existing, and nothing above depends on it — so it cannot perturb the
+  // creation order or the FK graph the metric reconciliation relies on.
+  if (demoOrgId === null) {
+    throw new Error("Invariant violated: demo organization was never created.");
+  }
+  const notificationCount = await seedNotifications(demoOrgId, demoUser.id);
+  console.log(
+    `  notifications : ${notificationCount} for ${ORG_SPECS[0].slug} ` +
+      `(${EXPECTED_UNREAD} unread, last ${FEED_WINDOW_DAYS} days)`,
+  );
 }
 
 // Run only when executed directly (e.g. `prisma db seed`), not when imported by a
