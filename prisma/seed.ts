@@ -75,6 +75,8 @@ import { Pool } from "pg";
 // (app/api/cron/snapshots) writes rows with exactly the same rules. Relative
 // import: ts-node does not resolve the app's `@/` alias.
 import { computeDaySnapshot, type SnapshotSegment } from "../lib/snapshot-formula";
+// The price list is shared with the "Add subscription" form for the same reason.
+import { PLAN_PRICE_CENTS } from "../lib/plan-pricing";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
@@ -139,26 +141,13 @@ const CURRENT_MONTH_START = new Date(
 const PREV_MONTH_START = addMonthsUTC(CURRENT_MONTH_START, -1);
 
 // ---------------------------------------------------------------------------
-// Pricing — consistent per (tier, interval), in integer cents.
-// YEARLY amounts are chosen divisible by 12 so the monthly-normalized MRR is exact.
+// Pricing — consistent per (tier, interval), in integer cents. The table itself
+// lives in lib/plan-pricing.ts (YEARLY amounts divisible by 12 there, so the
+// monthly-normalized MRR is exact).
 // ---------------------------------------------------------------------------
 
-const MONTHLY_CENTS: Record<PlanTier, number> = {
-  FREE: 0,
-  STARTER: 4_900, // $49 / mo
-  PRO: 19_900, // $199 / mo
-  ENTERPRISE: 99_900, // $999 / mo
-};
-
-const YEARLY_CENTS: Record<PlanTier, number> = {
-  FREE: 0,
-  STARTER: 52_800, // $528 / yr  -> $44 / mo
-  PRO: 214_800, // $2,148 / yr -> $179 / mo
-  ENTERPRISE: 1_078_800, // $10,788 / yr -> $899 / mo
-};
-
 function amountForCents(tier: PlanTier, interval: BillingInterval): number {
-  return interval === "YEARLY" ? YEARLY_CENTS[tier] : MONTHLY_CENTS[tier];
+  return PLAN_PRICE_CENTS[interval][tier];
 }
 
 // ---------------------------------------------------------------------------

@@ -17,8 +17,9 @@ import { z } from "zod";
 
 import { prisma } from "@/lib/prisma";
 import { env, isGithubEnabled } from "@/lib/env";
+import { verifyPassword } from "@/lib/password";
 
-// Shape of the demo login form. Validated inside `authorize` so we never trust
+// Shape of the credentials form. Validated inside `authorize` so we never trust
 // the raw client payload.
 const credentialsSchema = z.object({
   email: z.string().min(1),
@@ -41,34 +42,49 @@ if (isGithubEnabled) {
 providers.push(
   CredentialsProvider({
     id: "credentials",
-    name: "Demo account",
+    name: "Email and password",
     credentials: {
       email: { label: "Email", type: "email" },
       password: { label: "Password", type: "password" },
     },
+    // Two ways in, tried in order:
+    //   1. The env-configured demo account (unchanged).
+    //   2. A user who registered at /register: looked up by email, password
+    //      checked against their stored scrypt hash. Users without a hash
+    //      (GitHub-only accounts) can never match here.
+    // Every failure returns null, which NextAuth reports as the one generic
+    // "CredentialsSignin" — never "no such user" vs "wrong password".
     async authorize(rawCredentials) {
       const parsed = credentialsSchema.safeParse(rawCredentials);
       if (!parsed.success) return null;
 
-      const { email, password } = parsed.data;
+      const email = parsed.data.email.trim().toLowerCase();
+      const { password } = parsed.data;
 
-      // Constant-shape comparison against the env-provided demo credentials.
-      const emailMatches =
-        email.trim().toLowerCase() === env.DEMO_EMAIL.trim().toLowerCase();
-      const passwordMatches = password === env.DEMO_PASSWORD;
-      if (!emailMatches || !passwordMatches) return null;
+      // 1. Demo account — constant-shape comparison against the env credentials.
+      const isDemoEmail = email === env.DEMO_EMAIL.trim().toLowerCase();
+      if (isDemoEmail && password === env.DEMO_PASSWORD) {
+        // Resolve to a REAL database user so the demo session carries a valid id
+        // with memberships/orgs (prisma/seed.ts upserts the same email). Upsert
+        // keeps login working even before the seed has been run.
+        return prisma.user.upsert({
+          where: { email: env.DEMO_EMAIL },
+          update: {},
+          create: { email: env.DEMO_EMAIL, name: "Demo Operator" },
+          select: { id: true, name: true, email: true, image: true },
+        });
+      }
 
-      // Resolve to a REAL database user so the demo session carries a valid id
-      // with memberships/orgs (prisma/seed.ts upserts the same email). Upsert
-      // keeps login working even before the seed has been run.
-      const user = await prisma.user.upsert({
-        where: { email: env.DEMO_EMAIL },
-        update: {},
-        create: { email: env.DEMO_EMAIL, name: "Demo Operator" },
-        select: { id: true, name: true, email: true, image: true },
+      // 2. Registered user. Emails are stored lowercased by `registerUser`.
+      const user = await prisma.user.findUnique({
+        where: { email },
+        select: { id: true, name: true, email: true, image: true, passwordHash: true },
       });
+      if (user === null || user.passwordHash === null) return null;
+      if (!(await verifyPassword(password, user.passwordHash))) return null;
 
-      return user;
+      // The hash never leaves this function.
+      return { id: user.id, name: user.name, email: user.email, image: user.image };
     },
   }),
 );

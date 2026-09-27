@@ -20,6 +20,10 @@ model User {
   email         String    @unique
   emailVerified DateTime?
   image         String?
+  /// scrypt hash from lib/password.ts (`scrypt$N$r$p$salt$hash`) — NEVER a
+  /// plaintext password. NULL for users who only sign in through GitHub OAuth or
+  /// the env-configured demo account.
+  passwordHash  String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

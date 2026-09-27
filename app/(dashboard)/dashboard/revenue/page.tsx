@@ -38,6 +38,7 @@ import {
   statusFilterOption,
 } from "@/lib/invoice-filter";
 import { Button } from "@/components/ui/button";
+import { AddSubscriptionDialog } from "@/components/dashboard/add-subscription-dialog";
 import { EmptyState } from "@/components/dashboard/empty-state";
 import { PeriodControl } from "@/components/dashboard/period-control";
 import { SectionBoundary } from "@/components/dashboard/section-boundary";
@@ -124,11 +125,16 @@ export default async function RevenuePage({ searchParams }: RevenuePageProps) {
     );
   }
 
-  // The header names the workspace the figures belong to.
-  const organization = await prisma.organization.findUniqueOrThrow({
-    where: { id: organizationId },
-    select: { name: true },
+  // The header names the workspace, and the caller's role there decides whether
+  // "Add subscription" is offered — one row, by composite key.
+  const membership = await prisma.membership.findUniqueOrThrow({
+    where: { userId_organizationId: { userId: session.user.id, organizationId } },
+    select: { role: true, organization: { select: { name: true } } },
   });
+  const organization = membership.organization;
+  // The action re-checks this; members are simply not offered a control that
+  // would refuse them.
+  const canAddSubscription = membership.role !== "MEMBER";
 
   const summaryPromise = eager(getMetricsSummary(organizationId, period));
   const movementPromise = eager(getRevenueMovement(organizationId, HISTORY_MONTHS));
@@ -160,11 +166,14 @@ export default async function RevenuePage({ searchParams }: RevenuePageProps) {
           it and deliberately drops the cursor stack: a new period is a new result
           set, and a cursor from the old one would point at nothing.
         */}
-        <PeriodControl
-          current={range}
-          basePath="/dashboard/revenue"
-          params={status === "all" ? undefined : { status }}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          {canAddSubscription ? <AddSubscriptionDialog organizationId={organizationId} /> : null}
+          <PeriodControl
+            current={range}
+            basePath="/dashboard/revenue"
+            params={status === "all" ? undefined : { status }}
+          />
+        </div>
       </header>
 
       {/*
