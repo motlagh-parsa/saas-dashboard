@@ -1,11 +1,11 @@
 "use server";
 
-// Notification data layer — real rows, not the demo feed.
+// Notification data layer — the only module that reads or writes the feed.
 //
-// The hardcoded UI feed that used to live at this path now lives in
-// `lib/notification-demo-data.ts` (display keys, icon/tone lookups, hand-written
-// time labels). Nothing in this file knows about icons or Tailwind classes, and
-// nothing in that file touches the database. Keep it that way.
+// The hardcoded demo feed this replaced is gone. Nothing in this file knows
+// about icons or Tailwind classes: presentation lookups live in
+// `components/dashboard/notification-meta.ts`, and the serializable shape that
+// crosses into the client is `lib/notification-view.ts`. Keep it that way.
 //
 // ---------------------------------------------------------------------------
 // Why `"use server"` is on the FILE and not on the two mutations
@@ -37,16 +37,28 @@
 //   - `userId = NULL` is an ORG-WIDE notification; a set `userId` is personal to
 //     that member. Both are part of the org feed, which is why the reads filter on
 //     the organization only.
+//   - `archivedAt` set means filed away. Archived rows are out of the default
+//     feed, the unread feed, and the unread count — they appear only when asked
+//     for with `archivedOnly`. Archiving never touches `readAt`.
+//
+// Creating notifications does NOT live here: every export of this module is a
+// public endpoint, and a create would let any member post arbitrary rows into
+// their workspace's feed. Server code writes through `lib/notification-writer.ts`.
 import { revalidatePath } from "next/cache";
-import type { Notification, NotificationType, Prisma } from "@prisma/client";
+import type { Notification, Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth";
 
-// The persisted vocabulary is Prisma's enum, re-exported so callers have one
-// obvious import for both the row and its type. NOT the kebab-case display union
-// in `lib/notification-demo-data.ts` — the two are different alphabets.
-export type { Notification, NotificationType };
+// NOTE: the row and enum types are NOT re-exported from here, deliberately.
+//
+// Next's Server Action transform turns every export of a `"use server"` module
+// into a registered action endpoint, and it does that from the export list alone
+// — a `export type { … }` re-export is registered too, then fails to resolve at
+// build time ("Export NotificationType doesn't exist in target module"). Import
+// the types straight from `@prisma/client`, which is where they are generated;
+// `lib/notification-view.ts` is the shape everything above the data layer
+// actually passes around.
 
 /** Hard cap on `options.limit`, so a caller cannot ask for the whole table. */
 const MAX_LIMIT = 100;
@@ -54,6 +66,11 @@ const MAX_LIMIT = 100;
 export interface GetNotificationsOptions {
   /** Restrict to `readAt IS NULL`. */
   readonly unreadOnly?: boolean;
+  /**
+   * Return ONLY archived rows (`archivedAt IS NOT NULL`). Without it every read
+   * excludes archived rows, so they never pollute the main or unread feed.
+   */
+  readonly archivedOnly?: boolean;
   /** Page size. Clamped to [1, 100]; omitted means "no limit". */
   readonly limit?: number;
 }
@@ -92,12 +109,12 @@ function resolveLimit(limit: number | undefined): number | undefined {
 }
 
 /**
- * The org feed, newest first.
+ * The org feed, newest first — the live feed by default, or the archive with
+ * `archivedOnly`.
  *
- * Served by `@@index([organizationId, readAt, createdAt])`: the tenant filter and
- * the optional `readAt IS NULL` filter are both index prefixes, and `createdAt`
- * is the trailing sort column, so the ordering comes off the index rather than
- * from a sort node.
+ * Served by `@@index([organizationId, readAt, archivedAt, createdAt])`: the
+ * tenant filter leads, and the read/archived filters and the `createdAt` sort
+ * are the columns after it.
  */
 export async function getNotifications(
   orgId: string,
@@ -107,6 +124,7 @@ export async function getNotifications(
 
   const where: Prisma.NotificationWhereInput = {
     organizationId: orgId,
+    archivedAt: options?.archivedOnly === true ? { not: null } : null,
     ...(options?.unreadOnly === true ? { readAt: null } : {}),
   };
 
@@ -121,13 +139,15 @@ export async function getNotifications(
  * How many unread notifications this tenant has — the number on the bell.
  *
  * Counted in Postgres, never by reading rows and measuring the array. Hits the
- * `[organizationId, readAt, ...]` prefix of the same index as the feed.
+ * `[organizationId, readAt, archivedAt]` prefix of the same index as the feed.
+ * Archived rows are excluded: the bell must never count something the feed it
+ * opens onto no longer shows.
  */
 export async function getUnreadCount(orgId: string): Promise<number> {
   await assertMembership(orgId);
 
   return prisma.notification.count({
-    where: { organizationId: orgId, readAt: null },
+    where: { organizationId: orgId, readAt: null, archivedAt: null },
   });
 }
 
@@ -172,6 +192,51 @@ export async function markAllAsRead(orgId: string): Promise<number> {
   const result = await prisma.notification.updateMany({
     where: { organizationId: orgId, readAt: null },
     data: { readAt: new Date() },
+  });
+
+  if (result.count > 0) {
+    revalidatePath("/dashboard", "layout");
+  }
+
+  return result.count;
+}
+
+/**
+ * Archives one notification, read or not. Returns the number of rows archived —
+ * 0 when the id does not exist, belongs to another tenant, or is already
+ * archived, all deliberately indistinguishable. Tenant-scoped in the UPDATE's own
+ * WHERE clause, same as `markAsRead`.
+ */
+export async function archiveNotification(
+  notificationId: string,
+  orgId: string,
+): Promise<number> {
+  await assertMembership(orgId);
+
+  const result = await prisma.notification.updateMany({
+    where: { id: notificationId, organizationId: orgId, archivedAt: null },
+    data: { archivedAt: new Date() },
+  });
+
+  if (result.count > 0) {
+    // Layout scope: an archived unread row also leaves the bell's count.
+    revalidatePath("/dashboard", "layout");
+  }
+
+  return result.count;
+}
+
+/**
+ * Archives every READ notification still in the live feed. Unread rows are left
+ * where they are — clearing the inbox must not bury something nobody has seen.
+ * Returns the number archived.
+ */
+export async function archiveAllRead(orgId: string): Promise<number> {
+  await assertMembership(orgId);
+
+  const result = await prisma.notification.updateMany({
+    where: { organizationId: orgId, readAt: { not: null }, archivedAt: null },
+    data: { archivedAt: new Date() },
   });
 
   if (result.count > 0) {

@@ -1292,6 +1292,120 @@ export async function getMetricsSummary(
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// User activity (from MetricSnapshot)
+// ---------------------------------------------------------------------------
+
+export interface UserActivitySummary {
+  readonly period: ResolvedPeriod;
+  readonly previousPeriod: ResolvedPeriod;
+  /**
+   * Active users as of each period's `end`: the latest snapshot on or before that
+   * UTC day. `null` when the org has no snapshot that early.
+   *
+   * NOTE: `MetricSnapshot.activeUsers` is an ESTIMATE — a per-tier seat count on
+   * live plans (lib/snapshot-formula.ts). The schema stores no logins or usage.
+   */
+  readonly activeUsers: MetricComparison<number | null>;
+  /** Net seats added over each period: the sum of daily `newUsers` in (start, end]. */
+  readonly newUsers: MetricComparison<number>;
+  /**
+   * `YYYY-MM-DD` of the snapshot `activeUsers.current` comes from, or null.
+   * Earlier than `period.end` whenever the daily snapshot job has not caught up —
+   * worth saying, because a stale seat count looks exactly like a current one.
+   */
+  readonly asOfDate: string | null;
+}
+
+interface UserActivityRow {
+  active_users: NumericLike;
+  as_of_date: string | null;
+  new_users: NumericLike;
+}
+
+/**
+ * State and flow for one period, in one statement.
+ *
+ * Snapshot `date` is a UTC calendar day whose row describes that day's midnight
+ * (see lib/snapshot-formula.ts). So the state as of an instant is the latest day
+ * `<=` its UTC date, and the flow over `(start, end]` is the days strictly after
+ * `start`'s date up to and including `end`'s — the same half-open convention as
+ * every other period query in this file.
+ */
+function userActivityQuery(
+  organizationId: string,
+  period: ResolvedPeriod,
+): Prisma.PrismaPromise<UserActivityRow[]> {
+  return prisma.$queryRaw<UserActivityRow[]>(Prisma.sql`
+    WITH latest AS (
+      SELECT m."activeUsers", m."date"
+      FROM "MetricSnapshot" m
+      WHERE m."organizationId" = ${organizationId}
+        AND m."date" <= ${ts(period.end)}::date
+      ORDER BY m."date" DESC
+      LIMIT 1
+    )
+    SELECT
+      (SELECT "activeUsers" FROM latest)::int                      AS active_users,
+      (SELECT to_char("date", 'YYYY-MM-DD') FROM latest)           AS as_of_date,
+      COALESCE((
+        SELECT SUM(m."newUsers")
+        FROM "MetricSnapshot" m
+        WHERE m."organizationId" = ${organizationId}
+          AND m."date" > ${ts(period.start)}::date
+          AND m."date" <= ${ts(period.end)}::date
+      ), 0)::int                                                   AS new_users
+  `);
+}
+
+/**
+ * Active and new users with period-over-period comparison — the same shape and
+ * the same period handling as `getMetricsSummary`, so the overview's user tiles
+ * compare against exactly the window its other tiles do. Both periods are read in
+ * one REPEATABLE READ transaction for the same reason given there.
+ */
+export async function getUserActivity(
+  organizationId: string,
+  period: Period = { kind: "preset", preset: "last_30_days" },
+): Promise<UserActivitySummary> {
+  const current = resolvePeriod(period);
+  const previous = previousOfResolved(period, current);
+
+  const [currentRows, previousRows] = await prisma.$transaction(
+    [userActivityQuery(organizationId, current), userActivityQuery(organizationId, previous)],
+    { isolationLevel: "RepeatableRead" },
+  );
+
+  const activeOf = (rows: UserActivityRow[]): number | null => {
+    const value = rows[0]?.active_users ?? null;
+    return value === null ? null : toNumber(value);
+  };
+
+  const currentActive = activeOf(currentRows);
+  const previousActive = activeOf(previousRows);
+  const currentNew = toNumber(currentRows[0]?.new_users ?? 0);
+  const previousNew = toNumber(previousRows[0]?.new_users ?? 0);
+
+  return {
+    period: current,
+    previousPeriod: previous,
+    activeUsers: {
+      current: currentActive,
+      previous: previousActive,
+      changePct:
+        currentActive === null || previousActive === null
+          ? null
+          : percentChange(currentActive, previousActive),
+    },
+    newUsers: {
+      current: currentNew,
+      previous: previousNew,
+      changePct: percentChange(currentNew, previousNew),
+    },
+    asOfDate: currentRows[0]?.as_of_date ?? null,
+  };
+}
 // ---------------------------------------------------------------------------
 // Month-bucketed series
 //

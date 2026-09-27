@@ -4,25 +4,33 @@
 // Data flow, in order:
 //   1. `requireSession()` is the authorization gate. Middleware blocks anonymous
 //      requests, but middleware alone is NOT authz, so it is re-checked here.
-//   2. The organization is resolved SERVER-SIDE from the caller's memberships.
-//      No org id is ever accepted from props, params, or the client.
-//   3. The member list is scoped to that resolved id.
+//   2. The organization is resolved SERVER-SIDE by lib/active-org.ts: the
+//      workspace picked in the switcher, honoured only while the caller is a
+//      member of it, else their most privileged one.
+//   3. The member list and the live-subscription count (which decides the Delete
+//      workspace lock reason) are scoped to that resolved id, and run together.
 //
-// Two queries, run in sequence, with no `<Suspense>` anywhere. That is deliberate
-// and it is the opposite of what the overview/revenue/retention pages do: those
-// fire independent queries in parallel and stream each section separately. Here
-// the second query CANNOT start until the first has returned an organization id,
-// so there is nothing to overlap. Splitting a single dependent chain across
-// boundaries would buy no latency and cost a layout that assembles itself in
-// front of the reader for no reason.
+// Two round trips, with no `<Suspense>` anywhere. That is deliberate and it is
+// the opposite of what the overview/revenue/retention pages do: those fire
+// independent queries in parallel and stream each section separately. Here
+// nothing can start until the membership lookup has returned an organization id,
+// and the two follow-up queries are small enough to await as one batch. Splitting
+// that chain across boundaries would buy no latency and cost a layout that
+// assembles itself in front of the reader for no reason.
 //
-// UI ONLY. Every control on this page is inert by design — no handler, no action,
-// no mutation. Writes are a separate hand-off.
+// Writes. Two controls are live, both Server Actions in `lib/workspace-actions.ts`
+// driven by small client islands:
+//   - Workspace name — `WorkspaceDetailsForm` -> `renameWorkspace` (OWNER/ADMIN).
+//   - Leave workspace — `LeaveWorkspaceControl` -> `leaveWorkspace`, two-step,
+//     refused for the last owner.
+// "Invite member" is honestly unavailable (no invitation model or email
+// delivery), and "Delete workspace" stays locked.
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { Role } from "@prisma/client";
 import { Building2, Lock, UserPlus, Users } from "lucide-react";
 
+import { getActiveOrgId } from "@/lib/active-org";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
@@ -36,8 +44,6 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -48,6 +54,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/dashboard/empty-state";
+import { LeaveWorkspaceControl } from "@/components/dashboard/leave-workspace-control";
+import { WorkspaceDetailsForm } from "@/components/dashboard/workspace-details-form";
 
 export const metadata: Metadata = {
   title: "Settings",
@@ -57,14 +65,6 @@ export const metadata: Metadata = {
 /** Eyebrow used on every panel — small mono caps, the label voice of the product. */
 const EYEBROW =
   "font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase";
-
-/**
- * Field labels and column headers wear the same mono caps at the same tracking.
- * A settings form and a data table are the same kind of object here — a register
- * of key/value pairs — and typing them alike is what says so.
- */
-const FIELD_LABEL =
-  "font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase";
 
 /** Touch first: 44px on a phone, tightened to the app's 36px on a pointer. */
 const CONTROL_HEIGHT = "h-11 sm:h-9";
@@ -109,49 +109,66 @@ interface DangerAction {
   disabled: boolean;
 }
 
+const DELETE_CONSEQUENCE =
+  "Permanently deletes this workspace and all its data. This cannot be undone.";
+
 /**
  * The destructive actions, in ascending order of consequence.
  *
  * Leaving is reversible by someone else; deleting is reversible by nobody. The
- * second one is locked, and a disabled control with no stated reason reads as a
- * bug, so the reason ships beside it.
+ * second one is locked either way — deletion is not self-serve — and a disabled
+ * control with no stated reason reads as a bug, so the reason ships beside it.
+ * The reason has to be TRUE for this workspace: "locked while billing is active"
+ * is only said when a subscription is actually live.
  */
-const DANGER_ACTIONS: readonly DangerAction[] = [
-  {
-    id: "leave-workspace",
-    title: "Leave workspace",
-    description:
-      "You'll lose access to this workspace's data. An owner can re-invite you.",
-    label: "Leave workspace",
-    lockNote: null,
-    disabled: false,
-  },
-  {
-    id: "delete-workspace",
-    title: "Delete workspace",
-    description:
-      "Permanently deletes this workspace and all its data. This cannot be undone. Deletion stays locked while billing is active — contact support to release it.",
-    label: "Delete workspace",
-    lockNote: "Locked",
-    disabled: true,
-  },
-];
+function dangerActions(hasLiveBilling: boolean): readonly DangerAction[] {
+  return [
+    {
+      id: "leave-workspace",
+      title: "Leave workspace",
+      description:
+        "You'll lose access to this workspace's data. An owner can re-invite you.",
+      label: "Leave workspace",
+      lockNote: null,
+      disabled: false,
+    },
+    {
+      id: "delete-workspace",
+      title: "Delete workspace",
+      description: hasLiveBilling
+        ? `${DELETE_CONSEQUENCE} Deletion stays locked while billing is active — contact support to release it.`
+        : `${DELETE_CONSEQUENCE} No active billing. Contact support to delete your workspace.`,
+      label: "Delete workspace",
+      lockNote: "Locked",
+      disabled: true,
+    },
+  ];
+}
 
 export default async function SettingsPage() {
   const session = await requireSession();
 
-  // Tenant resolution. Role enum order is OWNER, ADMIN, MEMBER, so ascending
-  // role puts the caller's most privileged workspace first; oldest org breaks
-  // the tie deterministically.
-  const membership = await prisma.membership.findFirst({
-    where: { userId: session.user.id },
-    orderBy: [{ role: "asc" }, { organization: { createdAt: "asc" } }],
-    select: {
-      organizationId: true,
-      organization: { select: { name: true, slug: true } },
-    },
-  });
+  // Tenant resolution: the workspace picked in the switcher (verified against the
+  // caller's memberships), else their most privileged one — lib/active-org.ts.
+  const organizationId = await getActiveOrgId(session.user.id);
 
+  // The caller's membership IN that workspace: their role there, and the
+  // workspace's name and slug. Skipped outright with no workspace — the scope
+  // must never be allowed to drop out of the WHERE clause.
+  const membership =
+    organizationId === null
+      ? null
+      : await prisma.membership.findFirst({
+          where: { userId: session.user.id, organizationId },
+          select: {
+            organizationId: true,
+            role: true,
+            organization: { select: { name: true, slug: true } },
+          },
+        });
+
+  // No workspace at all — or, defensively, the membership was removed between
+  // the two queries above.
   if (!membership) {
     return (
       <main className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -175,17 +192,34 @@ export default async function SettingsPage() {
 
   const organization = membership.organization;
 
-  // Same ordering trick as above: OWNER, then ADMIN, then MEMBER, alphabetical
-  // inside each. The list reads as a hierarchy without needing a group header.
-  const members = await prisma.membership.findMany({
-    where: { organizationId: membership.organizationId },
-    orderBy: [{ role: "asc" }, { user: { name: "asc" } }],
-    include: {
-      user: { select: { id: true, name: true, email: true, image: true } },
-    },
-  });
+  const now = new Date();
+
+  const [members, liveSubscriptionCount] = await Promise.all([
+    // Same ordering trick as above: OWNER, then ADMIN, then MEMBER, alphabetical
+    // inside each. The list reads as a hierarchy without needing a group header.
+    prisma.membership.findMany({
+      where: { organizationId: membership.organizationId },
+      orderBy: [{ role: "asc" }, { user: { name: "asc" } }],
+      include: {
+        user: { select: { id: true, name: true, email: true, image: true } },
+      },
+    }),
+    // "Billing is active" = a subscription is LIVE now, decided by dates, not
+    // `status` — the rule lib/metrics.ts sets. The seed stamps CANCELED on every
+    // ended segment, and a status list would also have to remember that PAST_DUE
+    // is still billing (and still owed). Served by the
+    // `[organizationId, startedAt, endedAt]` index.
+    prisma.subscription.count({
+      where: {
+        organizationId: membership.organizationId,
+        startedAt: { lte: now },
+        OR: [{ endedAt: null }, { endedAt: { gt: now } }],
+      },
+    }),
+  ]);
 
   const memberCount = members.length;
+  const actions = dangerActions(liveSubscriptionCount > 0);
 
   return (
     <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -244,57 +278,17 @@ export default async function SettingsPage() {
             </div>
           </CardContent>
 
-          <CardContent className="grid gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="workspace-name" className={FIELD_LABEL}>
-                Workspace name
-              </Label>
-              <Input
-                id="workspace-name"
-                name="workspace-name"
-                defaultValue={organization.name}
-                aria-describedby="workspace-name-hint"
-                className={CONTROL_HEIGHT}
-              />
-              <p id="workspace-name-hint" className="text-[0.6875rem] text-muted-foreground">
-                Shown in the sidebar and on anything exported from this workspace.
-              </p>
-            </div>
-
-            {/*
-              The slug is READ-ONLY, so it is not an input.
-              A disabled text field still looks like a thing you were supposed to
-              be able to edit and are being denied; a mono chip on the muted
-              surface reads as a fact about the record instead — the same way an
-              invoice reference does elsewhere in the product.
-            */}
-            <div className="flex flex-col gap-1.5">
-              <span className={FIELD_LABEL}>Workspace slug</span>
-              <div
-                className={cn(
-                  "flex items-center overflow-hidden rounded-lg bg-muted px-2.5",
-                  CONTROL_HEIGHT,
-                )}
-              >
-                <code className="truncate font-mono text-xs text-muted-foreground">
-                  {organization.slug}
-                </code>
-              </div>
-              <p className="text-[0.6875rem] text-muted-foreground">
-                Fixed. It identifies this workspace in URLs and API calls.
-              </p>
-            </div>
-          </CardContent>
-
-          <CardContent className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
-            <p className="text-[0.6875rem] text-muted-foreground">
-              Changes apply to everyone in this workspace.
-            </p>
-            {/* type="button" so it can never submit a form it is nested inside. */}
-            <Button type="button" className={cn("px-4", CONTROL_HEIGHT)}>
-              Save changes
-            </Button>
-          </CardContent>
+          {/* Keyed by workspace: the form holds its name draft and result line
+              in client state, and a workspace switch refreshes this page in
+              place — without the key, the old workspace's name would stay in
+              the field. */}
+          <WorkspaceDetailsForm
+            key={membership.organizationId}
+            organizationId={membership.organizationId}
+            name={organization.name}
+            slug={organization.slug}
+            canEdit={membership.role !== "MEMBER"}
+          />
         </Card>
       </section>
 
@@ -313,16 +307,28 @@ export default async function SettingsPage() {
                   ? "You are the only person with access to this workspace's data."
                   : `${formatCount(memberCount)} people have access to this workspace's data.`}
               </p>
+              <p id="invite-member-note" className="text-[0.6875rem] text-muted-foreground">
+                Invitations coming soon.
+              </p>
             </div>
             <CardAction>
+              {/*
+                Unavailable, and says so — there is no invitation model or email
+                delivery behind it. `aria-disabled` rather than `disabled` so it
+                stays in the tab order and is announced with the note above; with
+                no handler, pressing it does nothing. Dimmed here because the
+                shared Button only styles the native `disabled` state.
+              */}
               <Button
                 type="button"
+                aria-disabled="true"
+                aria-describedby="invite-member-note"
                 className={cn(
-                  "bg-brand px-4 text-brand-foreground hover:bg-brand/90",
+                  "cursor-not-allowed bg-brand px-4 text-brand-foreground opacity-50",
                   CONTROL_HEIGHT,
                 )}
               >
-                <UserPlus />
+                <UserPlus aria-hidden />
                 Invite member
               </Button>
             </CardAction>
@@ -447,7 +453,7 @@ export default async function SettingsPage() {
           </CardHeader>
 
           <CardContent className="flex flex-col">
-            {DANGER_ACTIONS.map((action) => (
+            {actions.map((action) => (
               <div
                 key={action.id}
                 className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5 border-t border-border py-3 first:border-t-0 first:pt-0 last:pb-0"
@@ -471,15 +477,24 @@ export default async function SettingsPage() {
                       {action.lockNote}
                     </span>
                   ) : null}
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    disabled={action.disabled}
-                    aria-describedby={`${action.id}-description`}
-                    className={cn("px-4", CONTROL_HEIGHT)}
-                  >
-                    {action.label}
-                  </Button>
+                  {action.id === "leave-workspace" ? (
+                    <LeaveWorkspaceControl
+                      key={membership.organizationId}
+                      organizationId={membership.organizationId}
+                      workspaceName={organization.name}
+                      describedBy={`${action.id}-description`}
+                    />
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      disabled={action.disabled}
+                      aria-describedby={`${action.id}-description`}
+                      className={cn("px-4", CONTROL_HEIGHT)}
+                    >
+                      {action.label}
+                    </Button>
+                  )}
                 </div>
               </div>
             ))}

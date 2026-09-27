@@ -1,10 +1,28 @@
-// Shell for the authenticated app. It stays a Server Component: the only data it
-// reads is the session, purely so the account menu can show who is signed in.
+// Shell for the authenticated app. It stays a Server Component: it reads the
+// session so the account menu can show who is signed in, resolves the caller's
+// active workspace (lib/active-org.ts — the same resolver every page uses) plus
+// the full list for the switcher, and reads the notification feed for the bell.
+//
 // Authorization is NOT done here — each protected page calls `requireSession()`.
-// Org name below is still a PLACEHOLDER; tenant wiring is a db-architect follow-up.
+// It degrades instead: no session or no membership means no org id — the bell
+// renders empty rather than guessing, and the switcher reads "No workspace" (its
+// own fallback when no org in its list is active).
+//
+// Why the bell's data is read HERE and not inside the bell: `router.refresh()`
+// re-runs the Server Components of the current route, layouts included, and
+// streams fresh props into already-mounted client islands. So a "mark as read"
+// fired from the notifications page updates this count, and one fired from
+// inside the bell updates the page behind it — one mechanism, both directions,
+// no client-side fetching and no second copy of the feed.
 import { getServerSession } from "next-auth/next";
 
+import type { Notification } from "@prisma/client";
+
+import { getActiveOrgId } from "@/lib/active-org";
 import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { getNotifications, getUnreadCount } from "@/lib/notifications";
+import { toNotificationViews } from "@/lib/notification-view";
 import { Separator } from "@/components/ui/separator";
 import { BrandMark } from "@/components/dashboard/brand-mark";
 import { CommandPalette } from "@/components/dashboard/command-palette";
@@ -15,13 +33,41 @@ import { SidebarNav } from "@/components/dashboard/sidebar-nav";
 import { ThemeToggle } from "@/components/dashboard/theme-toggle";
 import { UserMenu } from "@/components/dashboard/user-menu";
 
-// PLACEHOLDER — real tenant comes from the session/org context later.
-const ORG_NAME = "Northwind Labs";
+/** How many rows the bell shows before deferring to the full page. */
+const BELL_LIMIT = 5;
 
 export default async function DashboardLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const session = await getServerSession(authOptions);
+  const userId = session?.user?.id ?? null;
+
+  // Every workspace for the switcher, most privileged first (same sort as the
+  // fallback in lib/active-org.ts), and the active one — the cookie choice when
+  // it is still valid, else that fallback. Same resolver as every page, so the
+  // header and the page below it always agree.
+  const [memberships, activeOrgId] = userId
+    ? await Promise.all([
+        prisma.membership.findMany({
+          where: { userId },
+          orderBy: [{ role: "asc" }, { organization: { createdAt: "asc" } }],
+          select: { organization: { select: { id: true, name: true } } },
+        }),
+        getActiveOrgId(userId),
+      ])
+    : [[], null];
+
+  const orgs = memberships.map(({ organization }) => ({
+    id: organization.id,
+    name: organization.name,
+  }));
+
+  const [recent, unreadCount]: [Notification[], number] = activeOrgId
+    ? await Promise.all([
+        getNotifications(activeOrgId, { limit: BELL_LIMIT }),
+        getUnreadCount(activeOrgId),
+      ])
+    : [[], 0];
 
   return (
     <div className="flex min-h-svh w-full">
@@ -30,7 +76,7 @@ export default async function DashboardLayout({
         <div className="px-1">
           <BrandMark />
         </div>
-        <SidebarNav />
+        <SidebarNav unreadCount={unreadCount} />
         <div className="mt-auto flex items-center gap-2 rounded-md border border-sidebar-border/70 px-2.5 py-2">
           <span className="relative flex size-2 shrink-0">
             <span className="absolute inline-flex size-full rounded-full bg-positive/70" />
@@ -43,21 +89,30 @@ export default async function DashboardLayout({
       {/* Content column */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background px-3 sm:px-4">
-          <MobileNav />
+          <MobileNav unreadCount={unreadCount} />
 
           {/* Small screens show the mark; desktop shows the tenant switcher. */}
           <div className="md:hidden">
             <BrandMark showWordmark={false} />
           </div>
 
-          <OrgSwitcher name={ORG_NAME} className="hidden md:flex" />
+          <OrgSwitcher
+            orgs={orgs}
+            activeOrgId={activeOrgId ?? ""}
+            className="hidden md:flex"
+          />
 
           <div className="ml-auto flex items-center gap-1">
             {/* Command palette: trigger + ⌘K dialog. */}
             <CommandPalette />
 
             {/* Bell: opens a peek at the inbox, anchored to the trigger. */}
-            <NotificationsMenu className="hidden md:inline-flex" />
+            <NotificationsMenu
+              orgId={activeOrgId}
+              unreadCount={unreadCount}
+              items={toNotificationViews(recent)}
+              className="hidden md:inline-flex"
+            />
 
             <ThemeToggle className="hidden md:inline-flex" />
 

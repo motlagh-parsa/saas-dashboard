@@ -4,6 +4,11 @@
 // shortcut so the dashboard shell can stay a Server Component — only this
 // subtree ships to the client.
 //
+// Scope: it jumps between the dashboard's pages, filtering the same nav list the
+// sidebar renders by label and path. It does NOT search data — no customers, no
+// reports, no invoices — so no copy on it may say "search". Widening it to data
+// means a server-backed query, not a longer placeholder.
+//
 // A11y: the dialog primitive handles focus trap, Escape, outside click, and
 // focus return to the trigger. The field/list pair is a combobox + listbox, so
 // arrow keys move the active option without moving DOM focus off the input.
@@ -101,11 +106,11 @@ export function CommandPalette() {
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger
-        aria-label="Search"
+        aria-label="Go to a page"
         className="hidden h-9 w-64 items-center gap-2 rounded-md border border-input bg-muted/40 px-2.5 text-sm text-muted-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring lg:flex"
       >
         <Search className="size-4" />
-        <span>Search customers, reports…</span>
+        <span>Go to a page…</span>
         <kbd className="ml-auto inline-flex items-center gap-0.5 rounded border border-border bg-background px-1.5 font-mono text-[0.625rem] text-muted-foreground">
           ⌘K
         </kbd>
@@ -116,7 +121,7 @@ export function CommandPalette() {
         aria-describedby={undefined}
         className="top-[12%] max-w-[calc(100%-2rem)] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-lg"
       >
-        <DialogTitle className="sr-only">Search</DialogTitle>
+        <DialogTitle className="sr-only">Go to a page</DialogTitle>
         <DialogDescription className="sr-only">
           Jump to a page. Type to filter, use the arrow keys to choose, Enter to go.
         </DialogDescription>
@@ -131,7 +136,7 @@ export function CommandPalette() {
             aria-controls={LISTBOX_ID}
             aria-autocomplete="list"
             aria-activedescendant={activeItem ? optionId(activeItem.href) : undefined}
-            placeholder="Search customers, reports…"
+            placeholder="Go to a page…"
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);

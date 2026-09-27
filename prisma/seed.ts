@@ -71,6 +71,11 @@ import type {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 
+// The per-day snapshot formula lives in lib/ so the daily cron
+// (app/api/cron/snapshots) writes rows with exactly the same rules. Relative
+// import: ts-node does not resolve the app's `@/` alias.
+import { computeDaySnapshot, type SnapshotSegment } from "../lib/snapshot-formula";
+
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
@@ -152,26 +157,8 @@ const YEARLY_CENTS: Record<PlanTier, number> = {
   ENTERPRISE: 1_078_800, // $10,788 / yr -> $899 / mo
 };
 
-// Per-tier seat band (base active users). Grows over the life of a segment.
-const SEATS: Record<PlanTier, number> = {
-  FREE: 3,
-  STARTER: 12,
-  PRO: 45,
-  ENTERPRISE: 180,
-};
-
 function amountForCents(tier: PlanTier, interval: BillingInterval): number {
   return interval === "YEARLY" ? YEARLY_CENTS[tier] : MONTHLY_CENTS[tier];
-}
-
-/** Monthly-normalized amount used for MRR (YEARLY spread across 12 months). */
-function normalizedMonthlyCents(
-  tier: PlanTier,
-  interval: BillingInterval,
-  amountCents: number,
-): number {
-  if (tier === "FREE") return 0;
-  return interval === "YEARLY" ? Math.round(amountCents / 12) : amountCents;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,15 +177,6 @@ function eachDayUTC(startInclusive: Date, endExclusive: Date): Date[] {
     days.push(new Date(t));
   }
   return days;
-}
-
-/** Stable, deterministic string hash (djb2 xor). No RNG anywhere. */
-function hashString(input: string): number {
-  let h = 5381;
-  for (let i = 0; i < input.length; i++) {
-    h = ((h << 5) + h) ^ input.charCodeAt(i);
-  }
-  return h >>> 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,89 +344,24 @@ export function buildSegments(spec: OrgSpec): BuiltSegment[] {
 
 // ---------------------------------------------------------------------------
 // Snapshot computation — reads the Subscription rows re-queried from the DB.
+//
+// The per-day rules (live-at-midnight state, paid new customers, churn without a
+// same-day hand-off, synthetic seat counts) live in lib/snapshot-formula.ts and
+// are shared with the daily cron. This file only walks the window.
 // ---------------------------------------------------------------------------
 
-export interface SubForCalc {
-  id: string;
-  tier: PlanTier;
-  interval: BillingInterval;
-  amountCents: number;
-  startedAt: Date;
-  endedAt: Date | null;
-}
-
-/** Deterministic seat count for a subscription on a given day (monotonic in day). */
-function seatCount(sub: SubForCalc, orgSlug: string, day: Date): number {
-  const base = SEATS[sub.tier];
-  const daysActive = Math.max(0, Math.floor((day.getTime() - sub.startedAt.getTime()) / DAY_MS));
-  const ramp = Math.min(1, daysActive / 365); // ramps to full over ~1 year
-  const growth = Math.floor(base * 0.6 * ramp); // up to +60% seats over the year
-  // Small constant per-segment offset derived ONLY from stable inputs (deterministic).
-  const offset = hashString(`${orgSlug}:${sub.tier}:${sub.startedAt.toISOString()}`) % 4;
-  return base + growth + offset;
-}
+export type SubForCalc = SnapshotSegment;
 
 export function computeSnapshots(
   organizationId: string,
   orgSlug: string,
   subs: SubForCalc[],
 ): Prisma.MetricSnapshotCreateManyInput[] {
-  const rows: Prisma.MetricSnapshotCreateManyInput[] = [];
-  let prevActiveUsers = 0;
-
-  for (const day of eachDayUTC(WINDOW_START, WINDOW_END_EXCLUSIVE)) {
-    const dayMs = day.getTime();
-    const prevMs = dayMs - DAY_MS;
-
-    const activeToday = subs.filter(
-      (s) => s.startedAt.getTime() <= dayMs && (s.endedAt === null || s.endedAt.getTime() > dayMs),
-    );
-
-    let mrrCents = 0;
-    let activeUsers = 0;
-    for (const s of activeToday) {
-      mrrCents += normalizedMonthlyCents(s.tier, s.interval, s.amountCents);
-      activeUsers += seatCount(s, orgSlug, day);
-    }
-
-    // New PAID customers today: a paid segment starts today AND the org had no
-    // active paid subscription yesterday (excludes paid->paid plan changes).
-    const paidStartsToday = subs.filter(
-      (s) => s.tier !== "FREE" && s.startedAt.getTime() === dayMs,
-    ).length;
-    const hadActivePaidYesterday = subs.some(
-      (s) =>
-        s.tier !== "FREE" &&
-        s.startedAt.getTime() <= prevMs &&
-        (s.endedAt === null || s.endedAt.getTime() > prevMs),
-    );
-    const newSubs = paidStartsToday > 0 && !hadActivePaidYesterday ? paidStartsToday : 0;
-
-    // Churn today: a segment ends today with NO same-day replacement for this org.
-    const churnedSubs = subs.filter(
-      (s) =>
-        s.endedAt !== null &&
-        s.endedAt.getTime() === dayMs &&
-        !subs.some((x) => x.id !== s.id && x.startedAt.getTime() === dayMs),
-    ).length;
-
-    const newUsers = Math.max(0, activeUsers - prevActiveUsers);
-
-    rows.push({
-      organizationId,
-      date: day,
-      mrrCents,
-      activeSubs: activeToday.length,
-      newSubs,
-      churnedSubs,
-      activeUsers,
-      newUsers,
-    });
-
-    prevActiveUsers = activeUsers;
-  }
-
-  return rows;
+  return eachDayUTC(WINDOW_START, WINDOW_END_EXCLUSIVE).map((day) => ({
+    organizationId,
+    date: day,
+    ...computeDaySnapshot(orgSlug, subs, day),
+  }));
 }
 
 // ---------------------------------------------------------------------------

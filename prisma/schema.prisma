@@ -83,6 +83,7 @@ model Organization {
   invoices      Invoice[]
   snapshots     MetricSnapshot[]
   notifications Notification[]
+  reportRuns    ReportRun[]
 }
 
 model Membership {
@@ -213,6 +214,10 @@ model Notification {
   title          String
   body           String
   readAt         DateTime?
+  /// Set when a member files the notification away. Archived rows leave the
+  /// main feed, the unread count and the bell; they are listed only under the
+  /// Archived tab. Independent of `readAt`: archiving never marks anything read.
+  archivedAt     DateTime?
   createdAt      DateTime         @default(now())
 
   // Cascade: a notification is meaningless without the tenant that raised it, and
@@ -223,10 +228,10 @@ model Notification {
   // history — the notification simply reverts to org-wide.
   user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  // The feed query: tenant-scoped, optionally filtered to unread, always ordered
+  // The feed query: tenant-scoped, filtered on read and archived state, ordered
   // by createdAt desc. Serves getNotifications(), getUnreadCount() (the
-  // organizationId+readAt prefix), and the Organization cascade-delete FK.
-  @@index([organizationId, readAt, createdAt])
+  // organizationId+readAt+archivedAt prefix), and the Organization cascade-delete FK.
+  @@index([organizationId, readAt, archivedAt, createdAt])
   // Per-member fan-out: "this user's unread items", and the User SetNull FK.
   @@index([userId, readAt])
 }
@@ -240,6 +245,27 @@ enum NotificationType {
   REVENUE_DIP
   REPORT_READY
   SYSTEM
+}
+
+// ---------------------------------------------------------------------------
+// Report runs — one row per "Generate" press on /dashboard/reports.
+//
+// `reportId` is a catalogue key (`REPORTS[].id` in report-catalogue.ts), not a
+// foreign key: the catalogue is code, not a table. The route validates it against
+// a closed list before anything is written.
+// ---------------------------------------------------------------------------
+
+model ReportRun {
+  id             String   @id @default(cuid())
+  organizationId String
+  reportId       String
+  generatedAt    DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // "latest run of this report for this tenant" — also covers the Organization
+  // cascade-delete FK via the leading `organizationId`.
+  @@index([organizationId, reportId, generatedAt])
 }
 
 // ---------------------------------------------------------------------------

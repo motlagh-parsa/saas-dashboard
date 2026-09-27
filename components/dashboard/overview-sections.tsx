@@ -4,7 +4,9 @@ import {
   ChartSpline,
   Layers,
   TriangleAlert,
+  UserCheck,
   UserMinus,
+  UserPlus,
   Users,
 } from "lucide-react";
 
@@ -14,10 +16,12 @@ import type {
   MetricsSummary,
   NetRevenueRetentionResult,
   RecentInvoice,
+  UserActivitySummary,
 } from "@/lib/metrics";
 import {
   EM_DASH,
   formatCount,
+  formatDay,
   formatEnumLabel,
   formatMonthLong,
   formatMonthShort,
@@ -241,6 +245,68 @@ export async function KpiStrip({ summaryPromise, comparison }: KpiStripProps) {
         ) : (
           <CountUp value={churnRate.current} format="percent" digits={1} />
         )}
+      </MetricTile>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// User activity
+// ---------------------------------------------------------------------------
+
+interface UserActivityStripProps {
+  activityPromise: Promise<UserActivitySummary>;
+  /** "previous 30 days" etc. — the same phrase the KPI strip uses. */
+  comparison: string;
+}
+
+/**
+ * Active and new users, from MetricSnapshot, with the same period comparison as
+ * the KPI strip above it.
+ *
+ * The footnotes say "seats" on purpose: the snapshot's user figures are an
+ * estimate from plan seat counts, not logins, and the tile must not pass one off
+ * as the other. The as-of date is named because snapshots only exist up to the
+ * last day the daily job ran, and a stale count otherwise looks current.
+ */
+export async function UserActivityStrip({ activityPromise, comparison }: UserActivityStripProps) {
+  const { activeUsers, newUsers, asOfDate } = await activityPromise;
+  const span = comparison.replace("previous ", "");
+
+  const seatDelta =
+    activeUsers.current === null || activeUsers.previous === null
+      ? null
+      : activeUsers.current - activeUsers.previous;
+  const asOf = asOfDate === null ? null : formatDay(new Date(`${asOfDate}T00:00:00Z`));
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <MetricTile
+        label="Active users"
+        icon={UserCheck}
+        delta={<DeltaBadge value={activeUsers.changePct} unit="percent" goodDirection="up" />}
+        footnote={
+          asOf === null
+            ? "No user snapshot recorded yet"
+            : seatDelta === null
+              ? `Estimated seats on live plans, as of ${asOf}`
+              : `${formatSignedCount(seatDelta)} vs ${comparison} · seats as of ${asOf}`
+        }
+      >
+        {activeUsers.current === null ? (
+          <span className="text-muted-foreground">{EM_DASH}</span>
+        ) : (
+          <CountUp value={activeUsers.current} format="count" />
+        )}
+      </MetricTile>
+
+      <MetricTile
+        label="New users"
+        icon={UserPlus}
+        delta={<DeltaBadge value={newUsers.changePct} unit="percent" goodDirection="up" />}
+        footnote={`Net seats added in the last ${span}`}
+      >
+        <CountUp value={newUsers.current} format="count" />
       </MetricTile>
     </div>
   );

@@ -17,6 +17,9 @@ export type NavItem = {
   count?: number;
 };
 
+/** The one nav entry that carries a live count. Exported so the nav can find it. */
+export const NOTIFICATIONS_HREF = "/dashboard/notifications";
+
 // Grounded in the operator's job: watch revenue, then act on customers.
 export const primaryNav: NavItem[] = [
   { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
@@ -27,6 +30,10 @@ export const primaryNav: NavItem[] = [
 ];
 
 export const secondaryNav: NavItem[] = [
-  { label: "Notifications", href: "/dashboard/notifications", icon: Bell, count: 3 },
+  // No `count` here on purpose: the unread total is real data now, read on the
+  // server in `app/(dashboard)/layout.tsx` and passed into `SidebarNav`. A
+  // hardcoded number in a module constant would go stale the moment anything is
+  // marked read, and would disagree with the bell two inches away.
+  { label: "Notifications", href: NOTIFICATIONS_HREF, icon: Bell },
   { label: "Settings", href: "/dashboard/settings", icon: Settings },
 ];

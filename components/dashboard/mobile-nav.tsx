@@ -13,7 +13,12 @@ import { SidebarNav } from "@/components/dashboard/sidebar-nav";
  * change, Escape, or backdrop press. Motion is entrance-only and is neutralized
  * by the global reduced-motion rule.
  */
-export function MobileNav() {
+export interface MobileNavProps {
+  /** Unread notifications, forwarded to the nav so the drawer badge is live too. */
+  unreadCount?: number;
+}
+
+export function MobileNav({ unreadCount }: MobileNavProps) {
   const [open, setOpen] = React.useState(false);
   const pathname = usePathname();
 
@@ -73,7 +78,7 @@ export function MobileNav() {
                 <X />
               </Button>
             </div>
-            <SidebarNav onNavigate={() => setOpen(false)} />
+            <SidebarNav onNavigate={() => setOpen(false)} unreadCount={unreadCount} />
           </div>
         </div>
       ) : null}

@@ -4,8 +4,9 @@
 // Data flow, in order:
 //   1. `requireSession()` is the authorization gate. Middleware blocks anonymous
 //      requests, but middleware alone is NOT authz, so it is re-checked here.
-//   2. The organization is resolved SERVER-SIDE from the caller's memberships. No
-//      org id is ever accepted from props, params, or the client.
+//   2. The organization is resolved SERVER-SIDE by lib/active-org.ts: the
+//      workspace picked in the switcher, honoured only while the caller is a
+//      member of it, else their most privileged one.
 //   3. The one untrusted query param is narrowed before it reaches a query, by
 //      `parseRange`.
 //   4. Every query is started at once and handed to a section as a promise, so
@@ -16,6 +17,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Building2 } from "lucide-react";
 
+import { getActiveOrgId } from "@/lib/active-org";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
@@ -79,16 +81,11 @@ export default async function RetentionPage({ searchParams }: RetentionPageProps
   const period = periodFor(range);
   const asOf = resolvePeriod(period).end;
 
-  // Tenant resolution. Role enum order is OWNER, ADMIN, MEMBER, so ascending role
-  // puts the caller's most privileged workspace first; oldest org breaks the tie
-  // deterministically.
-  const membership = await prisma.membership.findFirst({
-    where: { userId: session.user.id },
-    orderBy: [{ role: "asc" }, { organization: { createdAt: "asc" } }],
-    select: { organizationId: true, organization: { select: { name: true } } },
-  });
+  // Tenant resolution: the workspace picked in the switcher (verified against the
+  // caller's memberships), else their most privileged one — lib/active-org.ts.
+  const organizationId = await getActiveOrgId(session.user.id);
 
-  if (!membership) {
+  if (organizationId === null) {
     return (
       <main className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
         <EmptyState
@@ -109,7 +106,11 @@ export default async function RetentionPage({ searchParams }: RetentionPageProps
     );
   }
 
-  const organizationId = membership.organizationId;
+  // The header names the workspace the figures belong to.
+  const organization = await prisma.organization.findUniqueOrThrow({
+    where: { id: organizationId },
+    select: { name: true },
+  });
 
   // Four queries, started together. The `<Suspense>` boundaries below are what
   // make this parallel — awaiting any of them here would serialize the page.
@@ -125,7 +126,7 @@ export default async function RetentionPage({ searchParams }: RetentionPageProps
         <div>
           <h1 className="font-heading text-xl font-semibold tracking-tight">Retention</h1>
           <p className="mt-1 text-[0.8125rem] text-muted-foreground">
-            {membership.organization.name}
+            {organization.name}
             <span aria-hidden className="px-1.5 text-muted-foreground/40">
               ·
             </span>

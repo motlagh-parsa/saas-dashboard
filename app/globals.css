@@ -286,6 +286,20 @@
     background-color: var(--brand);
     color: var(--brand-foreground);
   }
+  /*
+    Anything clickable reads as clickable (Tailwind v4's preflight resets buttons
+    to the default arrow). Kept in the base layer so a component can still opt
+    out with a `cursor-*` utility, and disabled controls never promise an action.
+  */
+  button,
+  [role="button"],
+  a {
+    cursor: pointer;
+  }
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }
 
 /*

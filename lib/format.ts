@@ -211,6 +211,113 @@ export function formatDay(value: Date): string {
 }
 
 // ---------------------------------------------------------------------------
+// Elapsed time — "when did this happen", relative to now
+// ---------------------------------------------------------------------------
+
+/**
+ * Accepts an ISO string as well as a `Date` on purpose: a row's `createdAt` is a
+ * real `Date` on the server and an ISO string by the time it reaches a client
+ * island, and both sides must produce the same words.
+ */
+type Instant = Date | string;
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+interface RelativeUnit {
+  readonly unit: Intl.RelativeTimeFormatUnit;
+  readonly ms: number;
+  /** The same unit spelled for a ~4rem column: `2h ago`, not `2 hours ago`. */
+  readonly short: string;
+}
+
+/**
+ * Coarsest first — the first unit the elapsed time actually fills is the one
+ * that gets used, so 90 minutes reads as "1 hour ago" and never "90 minutes ago".
+ *
+ * Months and years are the conventional 30/365-day approximations. This is a
+ * feed timestamp, not a billing period: nothing downstream does arithmetic on it.
+ */
+const RELATIVE_UNITS: readonly RelativeUnit[] = [
+  { unit: "year", ms: 365 * DAY_MS, short: "y" },
+  { unit: "month", ms: 30 * DAY_MS, short: "mo" },
+  { unit: "week", ms: 7 * DAY_MS, short: "w" },
+  { unit: "day", ms: DAY_MS, short: "d" },
+  { unit: "hour", ms: HOUR_MS, short: "h" },
+  { unit: "minute", ms: MINUTE_MS, short: "m" },
+];
+
+// `numeric: "always"` keeps this as "1 day ago" rather than "yesterday". The
+// column these land in is scanned vertically against "2 hours ago" and "3 days
+// ago"; one prose word in the middle of a numeric column breaks the scan, and it
+// has no compact spelling to match.
+let relativeFormatter: Intl.RelativeTimeFormat | undefined;
+
+function relativeTimeFormat(): Intl.RelativeTimeFormat {
+  relativeFormatter ??= new Intl.RelativeTimeFormat(LOCALE, { numeric: "always" });
+  return relativeFormatter;
+}
+
+/** `null` for anything that is not a real instant — a bad value must not render "NaN". */
+function toMillis(value: Instant): number | null {
+  const ms = typeof value === "string" ? Date.parse(value) : value.getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+interface Elapsed {
+  /** Signed: negative is the past, positive the future. */
+  readonly amount: number;
+  readonly unit: RelativeUnit;
+}
+
+/** `null` means "less than a minute either way", which both spellings special-case. */
+function splitElapsed(ms: number, now: Date): Elapsed | null {
+  const diff = ms - now.getTime();
+  const magnitude = Math.abs(diff);
+
+  const unit = RELATIVE_UNITS.find((candidate) => magnitude >= candidate.ms);
+  if (!unit) return null;
+
+  // Floor, not round: 119 minutes is still "1 hour ago", never "2 hours ago".
+  const amount = Math.floor(magnitude / unit.ms);
+  return { amount: diff < 0 ? -amount : amount, unit };
+}
+
+/**
+ * `2 hours ago` / `in 3 days`. The long spelling, for a full-width row.
+ *
+ * `now` is injectable so a caller can format a whole list against one instant
+ * instead of letting the clock tick mid-render and order the labels wrongly.
+ */
+export function formatRelativeTime(value: Instant, now: Date = new Date()): string {
+  const ms = toMillis(value);
+  if (ms === null) return EM_DASH;
+
+  const elapsed = splitElapsed(ms, now);
+  if (!elapsed) return "Just now";
+
+  return relativeTimeFormat().format(elapsed.amount, elapsed.unit.unit);
+}
+
+/**
+ * `2h ago` / `in 3d`. The same measurement as `formatRelativeTime`, spelled for a
+ * narrow column — the notification dropdown is 20rem wide and the long form wraps.
+ */
+export function formatRelativeTimeShort(value: Instant, now: Date = new Date()): string {
+  const ms = toMillis(value);
+  if (ms === null) return EM_DASH;
+
+  const elapsed = splitElapsed(ms, now);
+  if (!elapsed) return "now";
+
+  const magnitude = Math.abs(elapsed.amount);
+  return elapsed.amount < 0
+    ? `${magnitude}${elapsed.unit.short} ago`
+    : `in ${magnitude}${elapsed.unit.short}`;
+}
+
+// ---------------------------------------------------------------------------
 // People and labels — a name is optional in the schema, an email never is
 // ---------------------------------------------------------------------------
 

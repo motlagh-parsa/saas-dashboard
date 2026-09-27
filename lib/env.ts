@@ -29,6 +29,22 @@ const envSchema = z.object({
   DEMO_EMAIL: z.string().min(1).default("demo@saas-dashboard.dev"),
   DEMO_PASSWORD: z.string().min(1, "DEMO_PASSWORD is required"),
 
+  // Shared secret for the daily snapshot job (GET /api/cron/snapshots), sent in
+  // the `x-cron-secret` header. Optional: without it the app runs and the job
+  // endpoint refuses every call. An empty value counts as unset, and the
+  // .env.example placeholder is rejected outright — a secret printed in the repo
+  // protects nothing.
+  CRON_SECRET: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .min(16, "CRON_SECRET must be at least 16 characters")
+      .refine((value) => value !== "your-secret-here", {
+        message: "CRON_SECRET is still the .env.example placeholder — generate one with: openssl rand -hex 32",
+      })
+      .optional(),
+  ),
+
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),

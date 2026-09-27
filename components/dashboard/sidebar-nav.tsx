@@ -4,11 +4,17 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
-import { primaryNav, secondaryNav, type NavItem } from "./nav-items";
+import { NOTIFICATIONS_HREF, primaryNav, secondaryNav, type NavItem } from "./nav-items";
 
 type SidebarNavProps = {
   /** Fired after a nav item is chosen — used to close the mobile drawer. */
   onNavigate?: () => void;
+  /**
+   * Unread notifications, read on the server in the dashboard layout. Absent on
+   * any surface that has not resolved it; 0 renders no badge at all, because a
+   * zero badge is a thing to read that says nothing.
+   */
+  unreadCount?: number;
 };
 
 function isActive(pathname: string, href: string): boolean {
@@ -48,17 +54,29 @@ function NavLink({
         )}
       />
       <span className="truncate">{item.label}</span>
-      {typeof item.count === "number" ? (
+      {typeof item.count === "number" && item.count > 0 ? (
         <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-brand/15 px-1.5 font-mono text-[0.6875rem] font-medium text-brand tabular-nums">
           {item.count}
+          {/* A bare digit beside a label is ambiguous read aloud. */}
+          <span className="sr-only"> unread</span>
         </span>
       ) : null}
     </Link>
   );
 }
 
-export function SidebarNav({ onNavigate }: SidebarNavProps) {
+export function SidebarNav({ onNavigate, unreadCount }: SidebarNavProps) {
   const pathname = usePathname() ?? "/dashboard";
+
+  /**
+   * Stamps the live count onto the Notifications entry. Computed during render
+   * from the prop — the nav module stays a static description of the routes, and
+   * nothing here holds a second copy of a number the server already knows.
+   */
+  function withCount(item: NavItem): NavItem {
+    if (item.href !== NOTIFICATIONS_HREF || unreadCount === undefined) return item;
+    return { ...item, count: unreadCount };
+  }
 
   return (
     <nav className="flex flex-1 flex-col gap-6" aria-label="Primary">
@@ -83,7 +101,7 @@ export function SidebarNav({ onNavigate }: SidebarNavProps) {
         {secondaryNav.map((item) => (
           <NavLink
             key={item.href}
-            item={item}
+            item={withCount(item)}
             active={isActive(pathname, item.href)}
             onNavigate={onNavigate}
           />
