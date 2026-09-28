@@ -45,6 +45,13 @@ export interface UserFormState {
 
 export const IDLE_USER_FORM: UserFormState = { status: "idle", message: null, fieldErrors: {} };
 
+/** `createUser`'s result: on success, the raw invite token for the link — shown once. */
+export interface CreateUserFormState extends UserFormState {
+  readonly inviteToken: string | null;
+}
+
+export const IDLE_CREATE_USER_FORM: CreateUserFormState = { ...IDLE_USER_FORM, inviteToken: null };
+
 /** Shown on the email field, from the pre-check and from the unique index alike. */
 export const EMAIL_TAKEN = "Email already in use";
 

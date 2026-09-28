@@ -10,21 +10,26 @@
 // instant feedback, and again in `createUser`, which is the check that counts.
 // Fields are CONTROLLED because React resets uncontrolled inputs after every
 // form action, including a rejected one.
+//
+// Two steps in one dialog. A successful add swaps the form for the invite link:
+// the raw token exists only in that one response (the database keeps a hash),
+// so this is the admin's only chance to copy it. Closing the dialog drops it,
+// and reopening starts a fresh add.
 import { useActionState, useId, useState } from "react";
-import type { FormEvent } from "react";
+import type { FocusEvent, FormEvent } from "react";
 import type { Role } from "@prisma/client";
-import { Loader2, Plus, TriangleAlert } from "lucide-react";
+import { Check, Copy, Loader2, Plus, TriangleAlert } from "lucide-react";
 
 import { formatEnumLabel } from "@/lib/format";
 import { createUser } from "@/lib/user-actions";
 import {
-  IDLE_USER_FORM,
+  IDLE_CREATE_USER_FORM,
   USER_NAME_MAX,
   createUserSchema,
   userFormFieldErrors,
+  type CreateUserFormState,
   type UserFormField,
   type UserFormFieldErrors,
-  type UserFormState,
 } from "@/lib/user-form";
 import { Button } from "@/components/ui/button";
 import {
@@ -67,9 +72,14 @@ export function CreateUserDialog({ organizationId, roles }: CreateUserDialogProp
   const [open, setOpen] = useState<boolean>(false);
   // Bumped on every open, so the form below mounts fresh each time.
   const [attempt, setAttempt] = useState<number>(0);
+  // Set by a successful add; its presence IS the second step.
+  const [invite, setInvite] = useState<AddedUser | null>(null);
 
   function handleOpenChange(next: boolean): void {
-    if (next) setAttempt((previous) => previous + 1);
+    if (next) {
+      setAttempt((previous) => previous + 1);
+      setInvite(null);
+    }
     setOpen(next);
   }
 
@@ -86,29 +96,40 @@ export function CreateUserDialog({ organizationId, roles }: CreateUserDialogProp
       </DialogTrigger>
 
       <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Add a user</DialogTitle>
-          <DialogDescription>
-            Creates a new account in this workspace. It has no password, so they
-            can&apos;t sign in until invitations are available.
-          </DialogDescription>
-        </DialogHeader>
+        {invite === null ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>Add a user</DialogTitle>
+              <DialogDescription>
+                Creates a new account in this workspace. You&apos;ll get an invite
+                link to share, and they choose their own password with it.
+              </DialogDescription>
+            </DialogHeader>
 
-        <CreateUserForm
-          key={attempt}
-          organizationId={organizationId}
-          roles={roles}
-          onAdded={() => setOpen(false)}
-        />
+            <CreateUserForm
+              key={attempt}
+              organizationId={organizationId}
+              roles={roles}
+              onAdded={setInvite}
+            />
+          </>
+        ) : (
+          <InviteLinkStep invite={invite} />
+        )}
       </DialogContent>
     </Dialog>
   );
 }
 
+interface AddedUser {
+  readonly name: string;
+  readonly inviteToken: string;
+}
+
 interface CreateUserFormProps {
   organizationId: string;
   roles: readonly Role[];
-  onAdded: () => void;
+  onAdded: (added: AddedUser) => void;
 }
 
 function CreateUserForm({ organizationId, roles, onAdded }: CreateUserFormProps) {
@@ -122,15 +143,15 @@ function CreateUserForm({ organizationId, roles, onAdded }: CreateUserFormProps)
   // Closing and confirming happen in the action's own completion path — after
   // the server has said yes — rather than in an effect watching the state.
   const [state, formAction, pending] = useActionState(
-    async (previous: UserFormState, formData: FormData): Promise<UserFormState> => {
+    async (previous: CreateUserFormState, formData: FormData): Promise<CreateUserFormState> => {
       const result = await createUser(previous, formData);
-      if (result.status === "success") {
+      if (result.status === "success" && result.inviteToken !== null) {
         toast.success("User added", { description: draft.name.trim() });
-        onAdded();
+        onAdded({ name: draft.name.trim(), inviteToken: result.inviteToken });
       }
       return result;
     },
-    IDLE_USER_FORM,
+    IDLE_CREATE_USER_FORM,
   );
 
   const baseId = useId();
@@ -261,5 +282,89 @@ function CreateUserForm({ organizationId, roles, onAdded }: CreateUserFormProps)
         </Button>
       </DialogFooter>
     </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step two — the invite link, shown once
+// ---------------------------------------------------------------------------
+
+type CopyState = "idle" | "copied" | "failed";
+
+function InviteLinkStep({ invite }: { invite: AddedUser }) {
+  const [copy, setCopy] = useState<CopyState>("idle");
+  const inputId = useId();
+  const hintId = useId();
+
+  // Built on the client from the origin the admin is actually using, so the link
+  // is right behind a proxy or on a preview deployment without any config. This
+  // step only ever renders after a submit, never during SSR.
+  const link = `${window.location.origin}/invite/${invite.inviteToken}`;
+
+  async function handleCopy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopy("copied");
+    } catch {
+      // Clipboard access can be refused (permissions, insecure origin). The link
+      // is still on screen and selectable, so say so rather than fail silently.
+      setCopy("failed");
+    }
+  }
+
+  function selectAll(event: FocusEvent<HTMLInputElement>): void {
+    event.currentTarget.select();
+  }
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>{invite.name} was added</DialogTitle>
+        <DialogDescription>Share this link with the user. It expires in 7 days.</DialogDescription>
+      </DialogHeader>
+
+      <div className="grid gap-2">
+        <Label htmlFor={inputId}>Invite link</Label>
+        <div className="flex gap-2">
+          <Input
+            id={inputId}
+            readOnly
+            value={link}
+            onFocus={selectAll}
+            aria-describedby={hintId}
+            className="h-11 min-w-0 font-mono text-xs sm:h-8"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void handleCopy()}
+            className="h-11 shrink-0 px-3 sm:h-8"
+          >
+            {copy === "copied" ? <Check aria-hidden /> : <Copy aria-hidden />}
+            {copy === "copied" ? "Copied" : "Copy link"}
+          </Button>
+        </div>
+        <p
+          id={hintId}
+          aria-live="polite"
+          className={copy === "failed" ? ERROR_CLASS : "text-xs text-muted-foreground"}
+        >
+          {copy === "failed"
+            ? "Couldn't copy automatically. Select the link and copy it yourself."
+            : "Anyone with this link can set this account's password, so send it only to them. It won't be shown again."}
+        </p>
+      </div>
+
+      <DialogFooter>
+        <DialogClose asChild>
+          <Button
+            type="button"
+            className="h-11 bg-brand text-brand-foreground hover:bg-brand/90 sm:h-8"
+          >
+            Done
+          </Button>
+        </DialogClose>
+      </DialogFooter>
+    </>
   );
 }

@@ -14,11 +14,16 @@ export const metadata: Metadata = {
 };
 
 type SignInPageProps = {
-  searchParams: Promise<{ callbackUrl?: string; error?: string; registered?: string }>;
+  searchParams: Promise<{
+    callbackUrl?: string;
+    error?: string;
+    registered?: string;
+    invited?: string;
+  }>;
 };
 
 export default async function SignInPage({ searchParams }: SignInPageProps) {
-  const { callbackUrl, error, registered } = await searchParams;
+  const { callbackUrl, error, registered, invited } = await searchParams;
 
   return (
     <div className="w-full max-w-sm">
@@ -42,6 +47,17 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
         >
           <CircleCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
           <span>Account created. Sign in to open your workspace.</span>
+        </p>
+      ) : null}
+
+      {/* Set by `acceptInvite` on success — same contract as `registered`. */}
+      {invited === "1" ? (
+        <p
+          role="status"
+          className="mt-6 flex items-start gap-2 rounded-md border border-positive/25 bg-positive/10 px-3 py-2.5 text-sm text-positive"
+        >
+          <CircleCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>Password set. You can now sign in.</span>
         </p>
       ) : null}
 

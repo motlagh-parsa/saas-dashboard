@@ -47,6 +47,7 @@ import { z } from "zod";
 import { writeAudit } from "@/lib/audit-writer";
 import { requireSession } from "@/lib/auth";
 import { formatPersonName } from "@/lib/format";
+import { issueInvite } from "@/lib/invite-token";
 import { prisma } from "@/lib/prisma";
 import type { UserActionState } from "@/lib/user-action-state";
 import {
@@ -54,6 +55,7 @@ import {
   createUserSchema,
   updateUserSchema,
   userFormFieldErrors,
+  type CreateUserFormState,
   type UserFormState,
 } from "@/lib/user-form";
 import { assignableRoles, canManage, hasAccountReach } from "@/lib/user-permissions";
@@ -356,23 +358,35 @@ function formFailure(message: string): UserFormState {
   return { status: "error", message, fieldErrors: {} };
 }
 
+/** A `createUser` refusal: never carries a token. */
+function createFailure(
+  message: string | null,
+  fieldErrors: CreateUserFormState["fieldErrors"] = {},
+): CreateUserFormState {
+  return { status: "error", message, fieldErrors, inviteToken: null };
+}
+
 /**
  * Creates a NEW account and adds it to the rendered workspace, in one nested
  * write, so a failure never leaves an account that belongs to no workspace.
  *
- * No password: an account made here cannot sign in until it has one, and
- * nothing in the product sets one yet. An email that already has an account is
- * refused rather than added to this workspace. "Email already in use" says no
- * more than the public register form already does.
+ * No password: the account gets a one-time invite instead (lib/invite-token.ts).
+ * Only the token's hash is stored; the raw token is returned ONCE, for the
+ * dialog to turn into a link, and is never readable again. The invitee sets
+ * their own password at /invite/<token>.
+ *
+ * An email that already has an account is refused rather than added to this
+ * workspace. "Email already in use" says no more than the public register form
+ * already does.
  */
 export async function createUser(
-  _previous: UserFormState,
+  _previous: CreateUserFormState,
   formData: FormData,
-): Promise<UserFormState> {
+): Promise<CreateUserFormState> {
   const session = await requireSession();
 
   const organizationId = idSchema.safeParse(formData.get("organizationId"));
-  if (!organizationId.success) return formFailure(STALE_PAGE);
+  if (!organizationId.success) return createFailure(STALE_PAGE);
 
   // Composite primary key — a miss for any org the caller does not belong to.
   const caller = await prisma.membership.findUnique({
@@ -381,27 +395,25 @@ export async function createUser(
     },
     select: { role: true },
   });
-  if (caller === null) return formFailure(STALE_PAGE);
-  if (caller.role === "MEMBER") return formFailure("Only owners and admins can add users.");
+  if (caller === null) return createFailure(STALE_PAGE);
+  if (caller.role === "MEMBER") return createFailure("Only owners and admins can add users.");
 
   const parsed = createUserSchema.safeParse({
     name: formData.get("name"),
     email: formData.get("email"),
     role: formData.get("role"),
   });
-  if (!parsed.success) {
-    return { status: "error", message: null, fieldErrors: userFormFieldErrors(parsed.error) };
-  }
+  if (!parsed.success) return createFailure(null, userFormFieldErrors(parsed.error));
   const { name, email, role } = parsed.data;
 
   if (!assignableRoles(caller.role).includes(role)) {
-    return { status: "error", message: null, fieldErrors: { role: "Only an owner can add an owner." } };
+    return createFailure(null, { role: "Only an owner can add an owner." });
   }
 
   const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
-  if (existing !== null) {
-    return { status: "error", message: null, fieldErrors: { email: EMAIL_TAKEN } };
-  }
+  if (existing !== null) return createFailure(null, { email: EMAIL_TAKEN });
+
+  const invite = issueInvite();
 
   let created: { id: string };
   try {
@@ -409,6 +421,8 @@ export async function createUser(
       data: {
         name,
         email,
+        inviteToken: invite.tokenHash,
+        inviteExpiresAt: invite.expiresAt,
         memberships: { create: { organizationId: organizationId.data, role } },
       },
       select: { id: true },
@@ -417,11 +431,13 @@ export async function createUser(
     // The unique index is the real guard: two adds racing with one email both
     // pass the check above, and exactly one of them lands here.
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      return { status: "error", message: null, fieldErrors: { email: EMAIL_TAKEN } };
+      return createFailure(null, { email: EMAIL_TAKEN });
     }
     throw error;
   }
 
+  // The token stays out of the audit entry: the log is readable by every admin,
+  // and a token there would be a working link.
   audit({
     organizationId: organizationId.data,
     actorId: session.user.id,
@@ -432,7 +448,7 @@ export async function createUser(
     metadata: { role },
   });
   revalidatePath(USERS_PATH);
-  return { status: "success", message: null, fieldErrors: {} };
+  return { status: "success", message: null, fieldErrors: {}, inviteToken: invite.token };
 }
 
 /**

@@ -27,6 +27,11 @@ model User {
   /// Set when an owner or admin suspends the account from /dashboard/users;
   /// NULL means active. Account-wide, not per workspace — see lib/user-actions.ts.
   suspendedAt   DateTime?
+  /// SHA-256 (hex) of the one-time invite token — NEVER the token itself, which
+  /// exists only in the link handed to the admin (lib/invite-token.ts). Set when
+  /// an admin adds the account; cleared when the invite is accepted.
+  inviteToken     String?   @unique
+  inviteExpiresAt DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
