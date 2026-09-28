@@ -46,7 +46,11 @@ export default async function DashboardLayout({
   // fallback in lib/active-org.ts), and the active one — the cookie choice when
   // it is still valid, else that fallback. Same resolver as every page, so the
   // header and the page below it always agree.
-  const [memberships, activeOrgId] = userId
+  //
+  // The account menu's identity is read from the DATABASE, not the session: the
+  // session is a JWT stamped at sign-in, so a rename on the Profile page would
+  // not reach the header until the next sign-in.
+  const [memberships, activeOrgId, account] = userId
     ? await Promise.all([
         prisma.membership.findMany({
           where: { userId },
@@ -54,8 +58,12 @@ export default async function DashboardLayout({
           select: { organization: { select: { id: true, name: true } } },
         }),
         getActiveOrgId(userId),
+        prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true, image: true },
+        }),
       ])
-    : [[], null];
+    : [[], null, null];
 
   const orgs = memberships.map(({ organization }) => ({
     id: organization.id,
@@ -122,9 +130,9 @@ export default async function DashboardLayout({
             />
 
             <UserMenu
-              name={session?.user?.name ?? null}
-              email={session?.user?.email ?? null}
-              image={session?.user?.image ?? null}
+              name={account?.name ?? session?.user?.name ?? null}
+              email={account?.email ?? session?.user?.email ?? null}
+              image={account?.image ?? session?.user?.image ?? null}
             />
           </div>
         </header>

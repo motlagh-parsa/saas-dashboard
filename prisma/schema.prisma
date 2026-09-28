@@ -34,6 +34,8 @@ model User {
   sessions      Session[]
   memberships   Membership[]
   notifications Notification[]
+  /// Audit entries this user performed (the ACTOR side, never the target).
+  auditLogs     AuditLog[]
 }
 
 model Account {
@@ -91,6 +93,7 @@ model Organization {
   snapshots     MetricSnapshot[]
   notifications Notification[]
   reportRuns    ReportRun[]
+  auditLogs     AuditLog[]
 }
 
 model Membership {
@@ -273,6 +276,38 @@ model ReportRun {
   // "latest run of this report for this tenant" — also covers the Organization
   // cascade-delete FK via the leading `organizationId`.
   @@index([organizationId, reportId, generatedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log — who did what to what, per workspace. Written only through
+// lib/audit-writer.ts, after a mutation has succeeded.
+//
+// The target is NOT a foreign key: `targetId` + `targetLabel` are a snapshot, so
+// an entry about a user who was later deleted still says who they were. The
+// actor IS a foreign key, SetNull on delete — the entry survives and reads as
+// "a deleted user" rather than disappearing with its author.
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  actorId        String?
+  /// Dotted verb, e.g. "user.suspended" — the closed list is in lib/audit-view.ts.
+  action         String
+  targetType     String
+  targetId       String?
+  targetLabel    String?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor        User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  // The log query: one tenant, newest first. Also covers the Organization
+  // cascade-delete FK via the leading `organizationId`.
+  @@index([organizationId, createdAt])
+  // The User SetNull FK — without it, deleting a user scans the whole log.
+  @@index([actorId])
 }
 
 // ---------------------------------------------------------------------------

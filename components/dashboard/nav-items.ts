@@ -3,6 +3,7 @@ import {
   Bell,
   FileText,
   LayoutDashboard,
+  ScrollText,
   Settings,
   TrendingUp,
   UserCog,
@@ -38,6 +39,7 @@ export const secondaryNav: NavItem[] = [
   // UserCog, not Users: Customers above already wears Users, and two identical
   // glyphs in one rail make the icons useless for scanning.
   { label: "Users", href: "/dashboard/users", icon: UserCog },
+  { label: "Audit Log", href: "/dashboard/audit", icon: ScrollText },
   { label: "Notifications", href: NOTIFICATIONS_HREF, icon: Bell },
   { label: "Settings", href: "/dashboard/settings", icon: Settings },
 ];

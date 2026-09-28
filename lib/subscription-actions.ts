@@ -16,10 +16,14 @@
 // What it writes is a NEW lifecycle: `previousSubscriptionId` stays null, so the
 // metrics treat it as a new customer chain, not a plan change of an existing one
 // (see the schema comment on that field). Every field it sets is an existing
-// Subscription column; no invoices are created.
+// Subscription column; no invoices are created. A success records an audit entry
+// via `after()` — see lib/audit-writer.ts.
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 
+import { writeAudit } from "@/lib/audit-writer";
 import { requireSession } from "@/lib/auth";
+import { formatEnumLabel } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import {
   subscriptionFieldErrors,
@@ -66,7 +70,7 @@ export async function addSubscription(
   }
   const { tier, interval, status, price, startDate } = parsed.data;
 
-  await prisma.subscription.create({
+  const created = await prisma.subscription.create({
     data: {
       organizationId,
       tier,
@@ -78,6 +82,18 @@ export async function addSubscription(
     },
     select: { id: true },
   });
+
+  after(() =>
+    writeAudit({
+      organizationId,
+      actorId: session.user.id,
+      action: "subscription.created",
+      targetType: "subscription",
+      targetId: created.id,
+      targetLabel: `${formatEnumLabel(tier)} ${formatEnumLabel(interval).toLowerCase()}`,
+      metadata: { tier, interval, amountCents: price },
+    }),
+  );
 
   // Layout scope: MRR moves on the overview, retention and customers pages too,
   // not only on /dashboard/revenue.

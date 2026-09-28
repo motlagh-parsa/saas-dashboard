@@ -17,11 +17,16 @@
 //   - The action acts on the workspace that was on screen — never on whatever the
 //     server would resolve NOW. Resolving fresh would let a stale tab (the user
 //     already left X in another tab) silently leave or rename workspace Y.
+//
+// Both record an audit entry once they have actually changed something, via
+// `after()` — see lib/audit-writer.ts.
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { Prisma, type Role } from "@prisma/client";
 import { z } from "zod";
 
+import { writeAudit } from "@/lib/audit-writer";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
@@ -92,16 +97,36 @@ export async function renameWorkspace(
     return failure(parsed.error.issues[0]?.message ?? "Enter a valid workspace name.");
   }
 
-  await prisma.organization.update({
+  const before = await prisma.organization.findUniqueOrThrow({
     where: { id: caller.organizationId },
-    data: { name: parsed.data },
+    select: { name: true },
   });
+  if (before.name !== parsed.data) {
+    await prisma.organization.update({
+      where: { id: caller.organizationId },
+      data: { name: parsed.data },
+    });
+    after(() =>
+      writeAudit({
+        organizationId: caller.organizationId,
+        actorId: caller.userId,
+        action: "workspace.renamed",
+        targetType: "workspace",
+        targetId: caller.organizationId,
+        targetLabel: parsed.data,
+        metadata: { from: before.name, to: parsed.data },
+      }),
+    );
+  }
 
   revalidatePath("/dashboard", "layout");
   return { status: "success", message: "Workspace name saved." };
 }
 
-type LeaveOutcome = "left" | "last-owner" | "already-gone";
+type LeaveOutcome =
+  | { readonly kind: "left"; readonly workspaceName: string }
+  | { readonly kind: "last-owner" }
+  | { readonly kind: "already-gone" };
 
 /**
  * Removes the caller's own membership, then sends them to /dashboard, which
@@ -131,18 +156,21 @@ export async function leaveWorkspace(
       async (tx): Promise<LeaveOutcome> => {
         // Re-read inside the transaction: the role may have changed since the
         // check above, and the row may already be gone.
-        const mine = await tx.membership.findUnique({ where: key, select: { role: true } });
-        if (mine === null) return "already-gone";
+        const mine = await tx.membership.findUnique({
+          where: key,
+          select: { role: true, organization: { select: { name: true } } },
+        });
+        if (mine === null) return { kind: "already-gone" };
 
         if (mine.role === "OWNER") {
           const owners = await tx.membership.count({
             where: { organizationId: caller.organizationId, role: "OWNER" },
           });
-          if (owners <= 1) return "last-owner";
+          if (owners <= 1) return { kind: "last-owner" };
         }
 
         await tx.membership.delete({ where: key });
-        return "left";
+        return { kind: "left", workspaceName: mine.organization.name };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
@@ -155,9 +183,26 @@ export async function leaveWorkspace(
     throw error;
   }
 
-  if (outcome === "last-owner") {
+  if (outcome.kind === "last-owner") {
     return failure(
       "You're the last owner of this workspace, so you can't leave it. Another member has to become an owner first.",
+    );
+  }
+
+  // Only a leave that happened HERE is recorded; "already-gone" was recorded by
+  // the tab that did it. The remaining members see the entry — the leaver no
+  // longer can.
+  if (outcome.kind === "left") {
+    const { workspaceName } = outcome;
+    after(() =>
+      writeAudit({
+        organizationId: caller.organizationId,
+        actorId: caller.userId,
+        action: "workspace.left",
+        targetType: "workspace",
+        targetId: caller.organizationId,
+        targetLabel: workspaceName,
+      }),
     );
   }
 

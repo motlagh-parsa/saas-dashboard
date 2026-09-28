@@ -5,7 +5,7 @@
 // it opens a menu, toggles the theme, and calls `signOut`.
 import Link from "next/link";
 import { signOut } from "next-auth/react";
-import { ChevronsUpDown, LogOut, Moon, Settings } from "lucide-react";
+import { ChevronsUpDown, LogOut, Moon, Settings, UserRound } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -90,6 +90,12 @@ export function UserMenu({ name, email, image }: UserMenuProps) {
 
         <DropdownMenuSeparator />
 
+        <DropdownMenuItem asChild>
+          <Link href="/dashboard/settings/profile">
+            <UserRound />
+            Profile
+          </Link>
+        </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link href="/dashboard/settings">
             <Settings />

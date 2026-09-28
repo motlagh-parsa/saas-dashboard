@@ -55,6 +55,7 @@ import {
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/dashboard/empty-state";
 import { LeaveWorkspaceControl } from "@/components/dashboard/leave-workspace-control";
+import { SettingsTabs } from "@/components/dashboard/settings-tabs";
 import { WorkspaceDetailsForm } from "@/components/dashboard/workspace-details-form";
 
 export const metadata: Metadata = {
@@ -223,15 +224,18 @@ export default async function SettingsPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-      <header className="rise">
-        <h1 className="font-heading text-xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-1 text-[0.8125rem] text-muted-foreground">
-          {organization.name}
-          <span aria-hidden className="px-1.5 text-muted-foreground/40">
-            ·
-          </span>
-          {formatCount(memberCount)} {memberCount === 1 ? "member" : "members"}
-        </p>
+      <header className="rise flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="font-heading text-xl font-semibold tracking-tight">Settings</h1>
+          <p className="mt-1 text-[0.8125rem] text-muted-foreground">
+            {organization.name}
+            <span aria-hidden className="px-1.5 text-muted-foreground/40">
+              ·
+            </span>
+            {formatCount(memberCount)} {memberCount === 1 ? "member" : "members"}
+          </p>
+        </div>
+        <SettingsTabs current="workspace" />
       </header>
 
       {/*

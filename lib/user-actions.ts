@@ -31,11 +31,22 @@
 // would each count two owners under a weaker level, both succeed, and leave the
 // workspace ownerless. Postgres aborts one of them (Prisma P2034) instead, and
 // that caller is asked to retry.
+//
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+// Every write that CHANGED something records an entry in the rendered
+// workspace's audit log, scheduled with `after()` so it never delays the
+// response (see lib/audit-writer.ts). A no-op — a repeat suspend from a stale
+// tab, a role set to what it already was — records nothing.
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { Prisma, type Role } from "@prisma/client";
 import { z } from "zod";
 
+import { writeAudit } from "@/lib/audit-writer";
 import { requireSession } from "@/lib/auth";
+import { formatPersonName } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import type { UserActionState } from "@/lib/user-action-state";
 import {
@@ -63,8 +74,23 @@ interface Target {
 }
 
 type RoleCheck =
-  | { readonly ok: true; readonly callerRole: Role; readonly targetRole: Role }
+  | {
+      readonly ok: true;
+      readonly callerRole: Role;
+      readonly targetRole: Role;
+      /** The target's stored name, for audit metadata. */
+      readonly targetName: string | null;
+      /** How the target reads in the audit log — snapshotted before any delete. */
+      readonly targetLabel: string;
+    }
   | { readonly ok: false; readonly message: string };
+
+type AuditEntry = Parameters<typeof writeAudit>[0];
+
+/** Records an entry once the response is on its way. Never throws. */
+function audit(entry: AuditEntry): void {
+  after(() => writeAudit(entry));
+}
 
 function failure(message: string): UserActionState {
   return { status: "error", message };
@@ -112,7 +138,7 @@ async function checkRoles(tx: Prisma.TransactionClient, target: Target): Promise
     where: {
       userId_organizationId: { userId: target.userId, organizationId: target.organizationId },
     },
-    select: { role: true },
+    select: { role: true, user: { select: { name: true, email: true } } },
   });
   if (member === null) {
     return {
@@ -124,7 +150,13 @@ async function checkRoles(tx: Prisma.TransactionClient, target: Target): Promise
     return { ok: false, message: "Only an owner can change another owner." };
   }
 
-  return { ok: true, callerRole: caller.role, targetRole: member.role };
+  return {
+    ok: true,
+    callerRole: caller.role,
+    targetRole: member.role,
+    targetName: member.user.name,
+    targetLabel: formatPersonName(member.user.name, member.user.email),
+  };
 }
 
 /** Account-wide actions: the caller must outrank the target in every workspace they share. */
@@ -160,6 +192,7 @@ async function setSuspended(formData: FormData, suspend: boolean): Promise<UserA
   const target = await readTarget(formData);
   if (target === null) return failure(STALE_PAGE);
 
+  let entry: AuditEntry | null = null;
   const result = await inTransaction(async (tx) => {
     const roles = await checkRoles(tx, target);
     if (!roles.ok) return failure(roles.message);
@@ -168,14 +201,27 @@ async function setSuspended(formData: FormData, suspend: boolean): Promise<UserA
 
     // Filtered on the current state, so a repeat from a stale tab keeps the
     // original suspension time instead of restamping it.
-    await tx.user.updateMany({
+    const { count } = await tx.user.updateMany({
       where: { id: target.userId, suspendedAt: suspend ? null : { not: null } },
       data: { suspendedAt: suspend ? new Date() : null },
     });
+    if (count > 0) {
+      entry = {
+        organizationId: target.organizationId,
+        actorId: target.callerId,
+        action: suspend ? "user.suspended" : "user.unsuspended",
+        targetType: "user",
+        targetId: target.userId,
+        targetLabel: roles.targetLabel,
+      };
+    }
     return success(suspend ? "Account suspended." : "Account unsuspended.");
   });
 
-  if (result.status === "success") revalidatePath(USERS_PATH);
+  if (result.status === "success") {
+    if (entry !== null) audit(entry);
+    revalidatePath(USERS_PATH);
+  }
   return result;
 }
 
@@ -206,6 +252,7 @@ export async function deleteUser(
   const target = await readTarget(formData);
   if (target === null) return failure(STALE_PAGE);
 
+  let entry: AuditEntry | null = null;
   const result = await inTransaction(async (tx) => {
     const roles = await checkRoles(tx, target);
     if (!roles.ok) return failure(roles.message);
@@ -228,10 +275,21 @@ export async function deleteUser(
     }
 
     await tx.user.delete({ where: { id: target.userId } });
+    entry = {
+      organizationId: target.organizationId,
+      actorId: target.callerId,
+      action: "user.deleted",
+      targetType: "user",
+      targetId: target.userId,
+      targetLabel: roles.targetLabel,
+    };
     return success("Account deleted.");
   });
 
-  if (result.status === "success") revalidatePath(USERS_PATH);
+  if (result.status === "success") {
+    if (entry !== null) audit(entry);
+    revalidatePath(USERS_PATH);
+  }
   return result;
 }
 
@@ -247,6 +305,7 @@ export async function updateUserRole(
   if (!nextRole.success) return failure("Choose Owner, Admin or Member.");
   const role = nextRole.data;
 
+  let entry: AuditEntry | null = null;
   const result = await inTransaction(async (tx) => {
     const roles = await checkRoles(tx, target);
     if (!roles.ok) return failure(roles.message);
@@ -270,10 +329,22 @@ export async function updateUserRole(
       },
       data: { role },
     });
+    entry = {
+      organizationId: target.organizationId,
+      actorId: target.callerId,
+      action: "role.changed",
+      targetType: "user",
+      targetId: target.userId,
+      targetLabel: roles.targetLabel,
+      metadata: { from: roles.targetRole, to: role },
+    };
     return success("Role updated.");
   });
 
-  if (result.status === "success") revalidatePath(USERS_PATH);
+  if (result.status === "success") {
+    if (entry !== null) audit(entry);
+    revalidatePath(USERS_PATH);
+  }
   return result;
 }
 
@@ -332,8 +403,9 @@ export async function createUser(
     return { status: "error", message: null, fieldErrors: { email: EMAIL_TAKEN } };
   }
 
+  let created: { id: string };
   try {
-    await prisma.user.create({
+    created = await prisma.user.create({
       data: {
         name,
         email,
@@ -350,6 +422,15 @@ export async function createUser(
     throw error;
   }
 
+  audit({
+    organizationId: organizationId.data,
+    actorId: session.user.id,
+    action: "user.created",
+    targetType: "user",
+    targetId: created.id,
+    targetLabel: name,
+    metadata: { role },
+  });
   revalidatePath(USERS_PATH);
   return { status: "success", message: null, fieldErrors: {} };
 }
@@ -371,18 +452,30 @@ export async function updateUser(
   }
   const { name } = parsed.data;
 
+  let entry: AuditEntry | null = null;
   const result = await inTransaction(async (tx) => {
     const roles = await checkRoles(tx, target);
     if (!roles.ok) return failure(roles.message);
     const reach = await checkAccountReach(tx, target);
     if (reach !== null) return failure(reach);
 
+    if (roles.targetName === name) return success("Name unchanged.");
     await tx.user.update({ where: { id: target.userId }, data: { name }, select: { id: true } });
+    entry = {
+      organizationId: target.organizationId,
+      actorId: target.callerId,
+      action: "user.updated",
+      targetType: "user",
+      targetId: target.userId,
+      targetLabel: name,
+      metadata: { from: roles.targetName, to: name },
+    };
     return success("User updated.");
   });
 
   if (result.status !== "success") return formFailure(result.message ?? STALE_PAGE);
 
+  if (entry !== null) audit(entry);
   revalidatePath(USERS_PATH);
   return { status: "success", message: null, fieldErrors: {} };
 }
