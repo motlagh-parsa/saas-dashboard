@@ -1,5 +1,10 @@
 // Segment loading fallback for /dashboard/settings.
 //
+// It lives in the `(workspace)` route group, beside the page, because a
+// loading.tsx wraps every route nested under it: at `settings/` it would also be
+// the fallback for /dashboard/settings/profile, flashing this page's silhouette
+// there. The group keeps it to this page; the URL is unchanged.
+//
 // The (dashboard) group already has one, but it renders the OVERVIEW's shapes —
 // arriving on this route would flash a layout that is not the one about to
 // appear. This overrides it with the settings silhouette, so the only thing that
@@ -124,9 +129,16 @@ export default function SettingsLoading() {
       <span className="sr-only">Loading your workspace settings…</span>
 
       <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2">
-          <Skeleton className="h-6 w-28" />
-          <Skeleton className="h-3.5 w-52" />
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-6 w-28" />
+            <Skeleton className="h-3.5 w-52" />
+          </div>
+          {/* Workspace | Profile tabs (SettingsTabs). */}
+          <div className="inline-flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+            <Skeleton className="h-11 w-24 md:h-8" />
+            <Skeleton className="h-11 w-16 md:h-8" />
+          </div>
         </div>
 
         <div className="mt-3">

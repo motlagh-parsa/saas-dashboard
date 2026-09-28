@@ -1,7 +1,45 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
+/*
+  Theme model (lib/theme.ts). <html> carries one of three states:
+    .light  — the reader chose light; the OS is ignored.
+    .dark   — the reader chose dark.
+    (none)  — "system": follow `prefers-color-scheme`.
+  The root layout renders that class from the `meridian_theme` cookie, so the
+  first paint is already right with no inline script.
+
+  `dark:` utilities therefore fire under an explicit `.dark` ancestor, OR under
+  a dark OS while <html> is not `.light`. The `.dark *` branch is unchanged from
+  before, so a subtree pinned with `.dark` (the auth brand panel) still works in
+  every mode.
+*/
+@custom-variant dark {
+  &:is(.dark *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:is(:root:not(.light) *) {
+      @slot;
+    }
+  }
+}
+
+/*
+  Where the dark TOKENS apply — the element that carries `.dark`, or <html> itself
+  in system mode under a dark OS. A variant rather than two hand-written rules so
+  the palette below is declared exactly once.
+*/
+@custom-variant dark-surface {
+  &:is(.dark) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:is(:root:not(.light)) {
+      @slot;
+    }
+  }
+}
 
 @theme inline {
   --color-background: var(--background);
@@ -87,6 +125,9 @@
 */
 :root {
   --radius: 0.5rem;
+
+  /* Native UI (scrollbars, form controls) follows the palette. */
+  color-scheme: light;
 
   --background: oklch(0.985 0.003 255);
   --foreground: oklch(0.24 0.012 260);
@@ -189,80 +230,88 @@
   "Terminal Ledger" — dark / "Terminal".
   Cool blue-shifted graphite, layered for elevation, never pure black.
   Gold brightens so it glows against the graphite.
+
+  Applied through `dark-surface` (see the top of this file): on any `.dark`
+  element, and on <html> in system mode when the OS is dark.
 */
+:root,
 .dark {
-  --background: oklch(0.17 0.008 260);
-  --foreground: oklch(0.93 0.005 260);
-  --card: oklch(0.21 0.009 260);
-  --card-foreground: oklch(0.93 0.005 260);
-  --popover: oklch(0.225 0.009 260);
-  --popover-foreground: oklch(0.93 0.005 260);
+  @variant dark-surface {
+    color-scheme: dark;
 
-  --primary: oklch(0.93 0.006 260);
-  --primary-foreground: oklch(0.22 0.012 260);
-  --secondary: oklch(0.26 0.01 260);
-  --secondary-foreground: oklch(0.93 0.005 260);
-  --muted: oklch(0.25 0.01 260);
-  --muted-foreground: oklch(0.7 0.012 260);
-  --accent: oklch(0.27 0.011 260);
-  --accent-foreground: oklch(0.93 0.005 260);
+    --background: oklch(0.17 0.008 260);
+    --foreground: oklch(0.93 0.005 260);
+    --card: oklch(0.21 0.009 260);
+    --card-foreground: oklch(0.93 0.005 260);
+    --popover: oklch(0.225 0.009 260);
+    --popover-foreground: oklch(0.93 0.005 260);
 
-  --destructive: oklch(0.7 0.18 22);
+    --primary: oklch(0.93 0.006 260);
+    --primary-foreground: oklch(0.22 0.012 260);
+    --secondary: oklch(0.26 0.01 260);
+    --secondary-foreground: oklch(0.93 0.005 260);
+    --muted: oklch(0.25 0.01 260);
+    --muted-foreground: oklch(0.7 0.012 260);
+    --accent: oklch(0.27 0.011 260);
+    --accent-foreground: oklch(0.93 0.005 260);
 
-  --border: oklch(1 0 0 / 9%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.8 0.13 78);
+    --destructive: oklch(0.7 0.18 22);
 
-  --brand: oklch(0.8 0.13 78);
-  --brand-foreground: oklch(0.22 0.03 78);
+    --border: oklch(1 0 0 / 9%);
+    --input: oklch(1 0 0 / 12%);
+    --ring: oklch(0.8 0.13 78);
 
-  --positive: oklch(0.72 0.14 155);
-  --positive-foreground: oklch(0.16 0.02 155);
-  --negative: oklch(0.7 0.18 22);
-  --negative-foreground: oklch(0.16 0.02 22);
+    --brand: oklch(0.8 0.13 78);
+    --brand-foreground: oklch(0.22 0.03 78);
 
-  --chart-1: oklch(0.8 0.13 78);
-  --chart-2: oklch(0.7 0.1 210);
-  --chart-3: oklch(0.72 0.14 155);
-  --chart-4: oklch(0.66 0.12 266);
-  --chart-5: oklch(0.7 0.17 22);
+    --positive: oklch(0.72 0.14 155);
+    --positive-foreground: oklch(0.16 0.02 155);
+    --negative: oklch(0.7 0.18 22);
+    --negative-foreground: oklch(0.16 0.02 22);
 
-  /*
-    The ramp inverts on graphite. Sequential always means "furthest from the
-    surface = highest rank", and on a dark surface that direction is dim -> bright:
-    dim brass up to full signal gold, where tier-4 lands exactly on --brand.
-    tier-1 stops at L 0.52 because below that it drops under 3:1 against the card.
-    Even steps of ~0.093 in L.
-  */
-  --tier-1: oklch(0.52 0.06 78);
-  --tier-2: oklch(0.615 0.083 78);
-  --tier-3: oklch(0.71 0.106 78);
-  --tier-4: oklch(0.8 0.13 78);
+    --chart-1: oklch(0.8 0.13 78);
+    --chart-2: oklch(0.7 0.1 210);
+    --chart-3: oklch(0.72 0.14 155);
+    --chart-4: oklch(0.66 0.12 266);
+    --chart-5: oklch(0.7 0.17 22);
 
-  /*
-    The direction scale on graphite. Same two hues as paper — steel #43afc1 and
-    rose #fa686a — brightened for the dark surface. The soft variants move TOWARD
-    the card rather than away from it, so "still open" reads as a quieter version
-    of the same direction instead of a new one.
-  */
-  --movement-up: oklch(0.7 0.1 210);
-  --movement-down: oklch(0.7 0.17 22);
-  --movement-up-soft: oklch(0.5 0.06 210);
-  --movement-down-soft: oklch(0.5 0.1 22);
-  --movement-flat: oklch(0.65 0.012 260);
-  --balance-fill: oklch(0.3 0.01 260);
-  --balance-rule: oklch(0.48 0.012 260);
+    /*
+      The ramp inverts on graphite. Sequential always means "furthest from the
+      surface = highest rank", and on a dark surface that direction is dim -> bright:
+      dim brass up to full signal gold, where tier-4 lands exactly on --brand.
+      tier-1 stops at L 0.52 because below that it drops under 3:1 against the card.
+      Even steps of ~0.093 in L.
+    */
+    --tier-1: oklch(0.52 0.06 78);
+    --tier-2: oklch(0.615 0.083 78);
+    --tier-3: oklch(0.71 0.106 78);
+    --tier-4: oklch(0.8 0.13 78);
 
-  --chart-grid: oklch(1 0 0 / 7%);
+    /*
+      The direction scale on graphite. Same two hues as paper — steel #43afc1 and
+      rose #fa686a — brightened for the dark surface. The soft variants move TOWARD
+      the card rather than away from it, so "still open" reads as a quieter version
+      of the same direction instead of a new one.
+    */
+    --movement-up: oklch(0.7 0.1 210);
+    --movement-down: oklch(0.7 0.17 22);
+    --movement-up-soft: oklch(0.5 0.06 210);
+    --movement-down-soft: oklch(0.5 0.1 22);
+    --movement-flat: oklch(0.65 0.012 260);
+    --balance-fill: oklch(0.3 0.01 260);
+    --balance-rule: oklch(0.48 0.012 260);
 
-  --sidebar: oklch(0.15 0.008 260);
-  --sidebar-foreground: oklch(0.93 0.005 260);
-  --sidebar-primary: oklch(0.8 0.13 78);
-  --sidebar-primary-foreground: oklch(0.22 0.03 78);
-  --sidebar-accent: oklch(0.23 0.01 260);
-  --sidebar-accent-foreground: oklch(0.93 0.005 260);
-  --sidebar-border: oklch(1 0 0 / 8%);
-  --sidebar-ring: oklch(0.8 0.13 78);
+    --chart-grid: oklch(1 0 0 / 7%);
+
+    --sidebar: oklch(0.15 0.008 260);
+    --sidebar-foreground: oklch(0.93 0.005 260);
+    --sidebar-primary: oklch(0.8 0.13 78);
+    --sidebar-primary-foreground: oklch(0.22 0.03 78);
+    --sidebar-accent: oklch(0.23 0.01 260);
+    --sidebar-accent-foreground: oklch(0.93 0.005 260);
+    --sidebar-border: oklch(1 0 0 / 8%);
+    --sidebar-ring: oklch(0.8 0.13 78);
+  }
 }
 
 @layer base {

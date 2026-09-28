@@ -14,6 +14,7 @@
 // fired from the notifications page updates this count, and one fired from
 // inside the bell updates the page behind it — one mechanism, both directions,
 // no client-side fetching and no second copy of the feed.
+import { cookies } from "next/headers";
 import { getServerSession } from "next-auth/next";
 
 import type { Notification } from "@prisma/client";
@@ -21,14 +22,19 @@ import type { Notification } from "@prisma/client";
 import { getActiveOrgId } from "@/lib/active-org";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { THEME_COOKIE, parseTheme } from "@/lib/theme";
 import { getNotifications, getUnreadCount } from "@/lib/notifications";
 import { toNotificationViews } from "@/lib/notification-view";
 import { Separator } from "@/components/ui/separator";
 import { BrandMark } from "@/components/dashboard/brand-mark";
-import { CommandPalette } from "@/components/dashboard/command-palette";
-import { MobileNav } from "@/components/dashboard/mobile-nav";
+import { CommandPaletteTrigger } from "@/components/dashboard/command-palette-trigger";
 import { NotificationsMenu } from "@/components/dashboard/notifications-menu";
 import { OrgSwitcher } from "@/components/dashboard/org-switcher";
+import {
+  SidebarDrawer,
+  SidebarDrawerProvider,
+  SidebarToggle,
+} from "@/components/dashboard/sidebar-drawer";
 import { SidebarNav } from "@/components/dashboard/sidebar-nav";
 import { ThemeToggle } from "@/components/dashboard/theme-toggle";
 import { UserMenu } from "@/components/dashboard/user-menu";
@@ -55,7 +61,7 @@ export default async function DashboardLayout({
         prisma.membership.findMany({
           where: { userId },
           orderBy: [{ role: "asc" }, { organization: { createdAt: "asc" } }],
-          select: { organization: { select: { id: true, name: true } } },
+          select: { role: true, organization: { select: { id: true, name: true } } },
         }),
         getActiveOrgId(userId),
         prisma.user.findUnique({
@@ -70,6 +76,15 @@ export default async function DashboardLayout({
     name: organization.name,
   }));
 
+  // The caller's role in the ACTIVE workspace — decides which palette items are
+  // offered. Presentation only: every page and action re-checks it.
+  const activeRole =
+    memberships.find(({ organization }) => organization.id === activeOrgId)?.role ?? null;
+
+  // The same cookie the root layout turned into the <html> class — read again
+  // here so the toggle's icon matches the theme on first paint.
+  const theme = parseTheme((await cookies()).get(THEME_COOKIE)?.value);
+
   const [recent, unreadCount]: [Notification[], number] = activeOrgId
     ? await Promise.all([
         getNotifications(activeOrgId, { limit: BELL_LIMIT }),
@@ -78,12 +93,23 @@ export default async function DashboardLayout({
     : [[], 0];
 
   return (
-    <div className="flex min-h-svh w-full">
-      {/* Desktop rail */}
-      <aside className="sticky top-0 hidden h-svh w-60 shrink-0 flex-col gap-6 border-r border-sidebar-border bg-sidebar px-3 py-4 md:flex">
+    <SidebarDrawerProvider className="flex min-h-svh w-full">
+      {/*
+        The sidebar — ONE element. At md+ it is the sticky rail; below md the same
+        element is an off-canvas drawer opened by the hamburger in the header
+        (components/dashboard/sidebar-drawer.tsx). Its content renders here once.
+      */}
+      <SidebarDrawer>
         <div className="px-1">
           <BrandMark />
         </div>
+        {/* On small screens the header has no room for the switcher, so it rides
+            in the drawer; at md+ it stays in the header where it always was. */}
+        <OrgSwitcher
+          orgs={orgs}
+          activeOrgId={activeOrgId ?? ""}
+          className="w-full md:hidden"
+        />
         <SidebarNav unreadCount={unreadCount} />
         <div className="mt-auto flex items-center gap-2 rounded-md border border-sidebar-border/70 px-2.5 py-2">
           <span className="relative flex size-2 shrink-0">
@@ -92,12 +118,12 @@ export default async function DashboardLayout({
           </span>
           <span className="text-xs text-muted-foreground">Metrics up to date</span>
         </div>
-      </aside>
+      </SidebarDrawer>
 
       {/* Content column */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background px-3 sm:px-4">
-          <MobileNav unreadCount={unreadCount} />
+          <SidebarToggle />
 
           {/* Small screens show the mark; desktop shows the tenant switcher. */}
           <div className="md:hidden">
@@ -111,8 +137,8 @@ export default async function DashboardLayout({
           />
 
           <div className="ml-auto flex items-center gap-1">
-            {/* Command palette: trigger + ⌘K dialog. */}
-            <CommandPalette />
+            {/* Command palette: the ⌘K listener, its buttons, and the dialog. */}
+            <CommandPaletteTrigger role={activeRole} theme={theme} />
 
             {/* Bell: opens a peek at the inbox, anchored to the trigger. */}
             <NotificationsMenu
@@ -122,7 +148,7 @@ export default async function DashboardLayout({
               className="hidden md:inline-flex"
             />
 
-            <ThemeToggle className="hidden md:inline-flex" />
+            <ThemeToggle theme={theme} className="hidden md:inline-flex" />
 
             <Separator
               orientation="vertical"
@@ -133,12 +159,13 @@ export default async function DashboardLayout({
               name={account?.name ?? session?.user?.name ?? null}
               email={account?.email ?? session?.user?.email ?? null}
               image={account?.image ?? session?.user?.image ?? null}
+              theme={theme}
             />
           </div>
         </header>
 
         {children}
       </div>
-    </div>
+    </SidebarDrawerProvider>
   );
 }

@@ -1,8 +1,10 @@
 // Segment loading fallback for /dashboard/users.
 //
-// The (dashboard) group already has one, but it renders the OVERVIEW's shapes —
-// arriving on this route would flash a layout that is not the one about to
-// appear. This overrides it with the users silhouette.
+// The (dashboard) group's fallback renders the OVERVIEW's shapes — arriving on
+// this route would flash a layout that is not the one about to appear. This
+// mirrors UsersTable instead: the header with Add user, then one card holding
+// the toolbar (search, Columns, Export), the table with its checkbox column,
+// and the pager.
 //
 // The shapes live here rather than in a `users-skeletons.tsx` for the reason
 // settings/loading.tsx gives: the page has no in-page `<Suspense>` boundaries,
@@ -28,10 +30,7 @@ export default function UsersLoading() {
             <Skeleton className="h-6 w-24" />
             <Skeleton className="h-3.5 w-52" />
           </div>
-          <div className="flex w-full items-center gap-2 sm:w-auto">
-            <Skeleton className="h-11 w-full rounded-lg sm:h-9 sm:w-72" />
-            <Skeleton className="h-11 w-28 shrink-0 rounded-lg sm:h-9" />
-          </div>
+          <Skeleton className="h-11 w-28 rounded-lg sm:h-9" />
         </div>
 
         <Card className="mt-3 gap-0 py-0">
@@ -45,23 +44,54 @@ export default function UsersLoading() {
             </CardAction>
           </CardHeader>
 
+          {/* Toolbar: search on the left, Columns and Export on the right. */}
+          <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+            <Skeleton className="h-11 w-full rounded-lg sm:h-9 sm:w-72" />
+            <div className="ml-auto flex items-center gap-2">
+              <Skeleton className="h-11 w-28 rounded-lg sm:h-9" />
+              <Skeleton className="h-11 w-24 rounded-lg sm:h-9" />
+            </div>
+          </div>
+
+          {/* Column headers, checkbox first. */}
+          <div className="flex items-center gap-4 border-b border-border px-4 py-3">
+            <Skeleton className="size-4 shrink-0 rounded" />
+            <Skeleton className="h-2.5 w-12" />
+            <Skeleton className="hidden h-2.5 w-14 md:block" />
+            <Skeleton className="h-2.5 w-10" />
+            <Skeleton className="hidden h-2.5 w-14 sm:block" />
+            <Skeleton className="h-2.5 w-14" />
+          </div>
+
           <div className="flex flex-col">
             {Array.from({ length: ROWS }).map((_, index) => (
               <div
                 key={index}
                 className="flex items-center gap-4 border-b border-border px-4 py-3 last:border-b-0"
               >
+                <Skeleton className="size-4 shrink-0 rounded" />
                 <div className="flex items-center gap-2.5">
-                  <Skeleton className="size-6 rounded-full" />
-                  <Skeleton className="h-3.5 w-32" />
+                  <Skeleton className="size-6 shrink-0 rounded-full" />
+                  <Skeleton className="h-3.5 w-28" />
                 </div>
-                <Skeleton className="hidden h-3 w-48 md:block" />
+                <Skeleton className="hidden h-3 w-44 md:block" />
                 <Skeleton className="h-5 w-14 rounded-4xl" />
                 <Skeleton className="hidden h-3 w-20 sm:block" />
                 <Skeleton className="h-5 w-14 rounded-4xl" />
                 <Skeleton className="ml-auto h-11 w-40 rounded-lg sm:h-8" />
               </div>
             ))}
+          </div>
+
+          {/* Pager: "Showing X–Y of Z" and the page controls. */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3">
+            <Skeleton className="h-3 w-40" />
+            <div className="flex items-center gap-1">
+              <Skeleton className="h-11 w-20 md:h-8" />
+              <Skeleton className="h-11 w-9 md:h-8" />
+              <Skeleton className="h-11 w-9 md:h-8" />
+              <Skeleton className="h-11 w-16 md:h-8" />
+            </div>
           </div>
         </Card>
       </div>

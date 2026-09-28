@@ -1,133 +1,146 @@
 "use client";
 
-// Global navigation palette. Owns its own open state and the ⌘K / Ctrl+K
-// shortcut so the dashboard shell can stay a Server Component — only this
-// subtree ships to the client.
+// The ⌘K palette: go to a page, run a quick action, or change the theme.
 //
-// Scope: it jumps between the dashboard's pages, filtering the same nav list the
-// sidebar renders by label and path. It does NOT search data — no customers, no
-// reports, no invoices — so no copy on it may say "search". Widening it to data
-// means a server-backed query, not a longer placeholder.
+// Controlled — `open` lives in CommandPaletteTrigger, which also owns the global
+// shortcut, so exactly one listener and one dialog exist per page.
 //
-// A11y: the dialog primitive handles focus trap, Escape, outside click, and
-// focus return to the trigger. The field/list pair is a combobox + listbox, so
-// arrow keys move the active option without moving DOM focus off the input.
+// Scope: it lists the app's destinations and commands (lib/palette-items.ts). It
+// does NOT search data — no customers, no invoices — so no copy on it may say
+// "search". Widening it to data means a server-backed query, not a longer list.
+//
+// A11y: the dialog primitive handles focus trap, Escape, outside click and focus
+// return. The field/list pair is a combobox + listbox, so arrow keys move the
+// active option without moving DOM focus off the input. Group headings are
+// `role="presentation"` separators inside the listbox, and each group's options
+// are wrapped in `role="group"` with an accessible name.
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { CornerDownLeft, Search } from "lucide-react";
+import type { Role } from "@prisma/client";
+import { CornerDownLeft, SearchX, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { Input } from "@/components/ui/input";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { primaryNav, secondaryNav, type NavItem } from "./nav-items";
-
-// One source of truth for "where can I go" — the same list the sidebar renders.
-const destinations: NavItem[] = [...primaryNav, ...secondaryNav];
+  PALETTE_GROUPS,
+  filterPaletteItems,
+  paletteItemsFor,
+  type PaletteItem,
+} from "@/lib/palette-items";
+import type { ThemePreference } from "@/lib/theme";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { useThemeCycle } from "@/components/dashboard/theme-toggle";
 
 const LISTBOX_ID = "command-palette-results";
 
-function optionId(href: string): string {
-  return `command-palette-option-${href.replace(/\//g, "-")}`;
+function optionId(item: PaletteItem): string {
+  return `command-palette-option-${item.id}`;
 }
 
-export function CommandPalette() {
+interface CommandPaletteProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** The caller's role in the active workspace; null with no workspace. */
+  role: Role | null;
+  /** The `meridian_theme` preference, so the current mode can be marked. */
+  theme: ThemePreference;
+}
+
+export function CommandPalette({ open, onOpenChange, role, theme }: CommandPaletteProps) {
   const router = useRouter();
-  const [open, setOpen] = React.useState(false);
+  const themes = useThemeCycle(theme);
   const [query, setQuery] = React.useState("");
   // Highlight intent. Clamped against the current results during render, so the
   // list never needs an effect to stay in a valid state.
   const [highlight, setHighlight] = React.useState(0);
 
-  // Synchronizing with a browser-level event source — a legitimate effect.
-  React.useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== "k") return;
-      if (!event.metaKey && !event.ctrlKey) return;
-      event.preventDefault();
-      setOpen((previous) => !previous);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  const allowed = React.useMemo(() => paletteItemsFor(role), [role]);
+  const results = React.useMemo(() => filterPaletteItems(allowed, query), [allowed, query]);
 
-  const results = React.useMemo<NavItem[]>(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return destinations;
-    return destinations.filter((item) =>
-      `${item.label} ${item.href}`.toLowerCase().includes(needle),
-    );
-  }, [query]);
+  // Grouped for rendering, in PALETTE_GROUPS order; empty groups drop out, so a
+  // heading only appears when something sits under it. `results` keeps the same
+  // order, so a flat index still addresses one option.
+  const groups = React.useMemo(
+    () =>
+      PALETTE_GROUPS.map((group) => ({
+        group,
+        items: results.filter((item) => item.group === group),
+      })).filter((entry) => entry.items.length > 0),
+    [results],
+  );
+  const ordered = React.useMemo(() => groups.flatMap((entry) => entry.items), [groups]);
 
-  const activeIndex = results.length === 0 ? -1 : Math.min(highlight, results.length - 1);
-  const activeItem = activeIndex >= 0 ? results[activeIndex] : undefined;
+  const activeIndex = ordered.length === 0 ? -1 : Math.min(highlight, ordered.length - 1);
+  const activeItem = activeIndex >= 0 ? ordered[activeIndex] : undefined;
 
   function handleOpenChange(next: boolean): void {
-    setOpen(next);
+    onOpenChange(next);
     if (!next) {
       setQuery("");
       setHighlight(0);
     }
   }
 
-  function go(href: string): void {
+  function run(item: PaletteItem): void {
     handleOpenChange(false);
-    router.push(href);
+    if (item.command.kind === "navigate") {
+      router.push(item.command.href);
+    } else {
+      themes.select(item.command.theme);
+    }
   }
 
   function handleInputKeyDown(event: React.KeyboardEvent<HTMLInputElement>): void {
+    const count = ordered.length;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setHighlight((previous) =>
-        results.length === 0 ? 0 : (Math.min(previous, results.length - 1) + 1) % results.length,
-      );
+      setHighlight((previous) => (count === 0 ? 0 : (Math.min(previous, count - 1) + 1) % count));
       return;
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
       setHighlight((previous) =>
-        results.length === 0
-          ? 0
-          : (Math.min(previous, results.length - 1) + results.length - 1) % results.length,
+        count === 0 ? 0 : (Math.min(previous, count - 1) + count - 1) % count,
       );
+      return;
+    }
+    if (event.key === "Home" && count > 0) {
+      event.preventDefault();
+      setHighlight(0);
+      return;
+    }
+    if (event.key === "End" && count > 0) {
+      event.preventDefault();
+      setHighlight(count - 1);
       return;
     }
     if (event.key === "Enter" && activeItem) {
       event.preventDefault();
-      go(activeItem.href);
+      run(activeItem);
     }
+  }
+
+  /** Right-hand hint: the path for a page, "Current" for the active theme. */
+  function hintFor(item: PaletteItem): string | null {
+    if (item.command.kind === "navigate") return item.command.href.split("?")[0];
+    return item.command.theme === themes.theme ? "Current" : null;
   }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger
-        aria-label="Go to a page"
-        className="hidden h-9 w-64 items-center gap-2 rounded-md border border-input bg-muted/40 px-2.5 text-sm text-muted-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring lg:flex"
-      >
-        <Search className="size-4" />
-        <span>Go to a page…</span>
-        <kbd className="ml-auto inline-flex items-center gap-0.5 rounded border border-border bg-background px-1.5 font-mono text-[0.625rem] text-muted-foreground">
-          ⌘K
-        </kbd>
-      </DialogTrigger>
-
       <DialogContent
         showCloseButton={false}
         aria-describedby={undefined}
         className="top-[12%] max-w-[calc(100%-2rem)] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-lg"
       >
-        <DialogTitle className="sr-only">Go to a page</DialogTitle>
+        <DialogTitle className="sr-only">Command palette</DialogTitle>
         <DialogDescription className="sr-only">
-          Jump to a page. Type to filter, use the arrow keys to choose, Enter to go.
+          Go to a page or run a command. Type to filter, use the arrow keys to choose, Enter to
+          run.
         </DialogDescription>
 
         <div className="flex items-center gap-2 border-b border-border px-3">
-          <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <Sparkles className="size-4 shrink-0 text-muted-foreground" aria-hidden />
           <Input
             autoFocus
             type="text"
@@ -135,8 +148,9 @@ export function CommandPalette() {
             aria-expanded
             aria-controls={LISTBOX_ID}
             aria-autocomplete="list"
-            aria-activedescendant={activeItem ? optionId(activeItem.href) : undefined}
-            placeholder="Go to a page…"
+            aria-activedescendant={activeItem ? optionId(activeItem) : undefined}
+            aria-label="Command"
+            placeholder="Type a page or command…"
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
@@ -145,58 +159,75 @@ export function CommandPalette() {
             onKeyDown={handleInputKeyDown}
             className="h-12 rounded-none border-0 bg-transparent px-0 focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
           />
+          <kbd className="hidden shrink-0 rounded border border-border bg-muted px-1.5 font-mono text-[0.625rem] text-muted-foreground sm:inline-flex">
+            Esc
+          </kbd>
         </div>
 
-        {results.length === 0 ? (
-          <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-            No pages match “{query.trim()}”.
-          </p>
+        {ordered.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 px-3 py-8 text-center">
+            <SearchX className="size-5 text-muted-foreground" aria-hidden />
+            <p className="text-sm text-muted-foreground" role="status">
+              No results for &lsquo;{query.trim()}&rsquo;
+            </p>
+          </div>
         ) : (
-          <ul
+          <div
             id={LISTBOX_ID}
             role="listbox"
-            aria-label="Pages"
+            aria-label="Commands"
             className="max-h-80 overflow-y-auto p-1.5"
           >
-            {results.map((item, index) => {
-              const Icon = item.icon;
-              const active = index === activeIndex;
-              return (
-                <li key={item.href} role="none">
-                  <button
-                    type="button"
-                    id={optionId(item.href)}
-                    role="option"
-                    aria-selected={active}
-                    tabIndex={-1}
-                    onMouseMove={() => setHighlight(index)}
-                    onClick={() => go(item.href)}
-                    className={cn(
-                      "flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left text-sm outline-none transition-colors",
-                      active ? "bg-accent text-accent-foreground" : "text-foreground",
-                    )}
-                  >
-                    <Icon
+            {groups.map(({ group, items }) => (
+              <div key={group} role="group" aria-label={group} className="pb-1 last:pb-0">
+                <p
+                  role="presentation"
+                  className="px-2 pt-1.5 pb-1 font-mono text-[0.625rem] font-medium tracking-[0.14em] text-muted-foreground/80 uppercase"
+                >
+                  {group}
+                </p>
+                {items.map((item) => {
+                  const Icon = item.icon;
+                  const index = ordered.indexOf(item);
+                  const active = index === activeIndex;
+                  const hint = hintFor(item);
+                  return (
+                    <div
+                      key={item.id}
+                      id={optionId(item)}
+                      role="option"
+                      aria-selected={active}
+                      onMouseMove={() => setHighlight(index)}
+                      onClick={() => run(item)}
                       className={cn(
-                        "size-4 shrink-0",
-                        active ? "text-brand" : "text-muted-foreground",
+                        "flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-2 text-left text-sm transition-colors select-none",
+                        active ? "bg-accent text-accent-foreground" : "text-foreground",
                       )}
-                    />
-                    <span className="truncate">{item.label}</span>
-                    <span className="ml-auto truncate font-mono text-[0.6875rem] text-muted-foreground">
-                      {item.href}
-                    </span>
-                    {active ? (
-                      <CornerDownLeft
-                        className="size-3.5 shrink-0 text-muted-foreground"
-                        aria-hidden
+                    >
+                      <Icon
+                        className={cn(
+                          "size-4 shrink-0",
+                          active ? "text-brand" : "text-muted-foreground",
+                        )}
                       />
-                    ) : null}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+                      <span className="truncate">{item.label}</span>
+                      {hint ? (
+                        <span className="ml-auto truncate font-mono text-[0.6875rem] text-muted-foreground">
+                          {hint}
+                        </span>
+                      ) : null}
+                      {active ? (
+                        <CornerDownLeft
+                          className={cn("size-3.5 shrink-0 text-muted-foreground", !hint && "ml-auto")}
+                          aria-hidden
+                        />
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
         )}
       </DialogContent>
     </Dialog>

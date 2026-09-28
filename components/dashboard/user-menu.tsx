@@ -5,7 +5,7 @@
 // it opens a menu, toggles the theme, and calls `signOut`.
 import Link from "next/link";
 import { signOut } from "next-auth/react";
-import { ChevronsUpDown, LogOut, Moon, Settings, UserRound } from "lucide-react";
+import { ChevronsUpDown, LogOut, Settings, UserRound } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -16,7 +16,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { toggleTheme } from "@/components/dashboard/theme-toggle";
+import { THEME_LABELS, type ThemePreference } from "@/lib/theme";
+import { THEME_ICONS, useThemeCycle } from "@/components/dashboard/theme-toggle";
 
 export interface UserMenuProps {
   /** `session.user.name` — null for accounts that never set one. */
@@ -25,6 +26,11 @@ export interface UserMenuProps {
   email: string | null;
   /** `session.user.image` — OAuth avatar, absent for the credentials demo user. */
   image?: string | null;
+  /**
+   * The `meridian_theme` preference. The menu item is the only theme control on
+   * small screens (the topbar button is desktop-only), so it cycles the same way.
+   */
+  theme: ThemePreference;
 }
 
 /** Up to two initials, falling back to the email local-part, then a neutral mark. */
@@ -38,7 +44,9 @@ function initialsFor(name: string | null, email: string | null): string {
   return initials ? initials.toUpperCase() : "—";
 }
 
-export function UserMenu({ name, email, image }: UserMenuProps) {
+export function UserMenu({ name, email, image, theme }: UserMenuProps) {
+  const themeCycle = useThemeCycle(theme);
+  const ThemeIcon = THEME_ICONS[themeCycle.theme];
   const displayName = name?.trim() || email?.trim() || "Account";
   const displayEmail = email?.trim() ?? "";
   const initials = initialsFor(name, email);
@@ -106,11 +114,14 @@ export function UserMenu({ name, email, image }: UserMenuProps) {
           // Keep the menu open so the theme change is visible before dismissing.
           onSelect={(event) => {
             event.preventDefault();
-            toggleTheme();
+            themeCycle.cycle();
           }}
         >
-          <Moon />
-          Toggle theme
+          <ThemeIcon />
+          Theme: {THEME_LABELS[themeCycle.theme]}
+          <span className="ml-auto text-xs text-muted-foreground">
+            → {THEME_LABELS[themeCycle.next]}
+          </span>
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />

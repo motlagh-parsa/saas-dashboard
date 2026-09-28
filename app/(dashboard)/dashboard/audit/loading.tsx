@@ -7,7 +7,7 @@
 import { Card, CardAction, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
-const ROWS = 8;
+const ROWS = 10;
 
 export default function AuditLogLoading() {
   return (

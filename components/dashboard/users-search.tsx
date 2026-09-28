@@ -56,6 +56,8 @@ export function UsersSearch({ query }: UsersSearchProps) {
     const params = new URLSearchParams(searchParams.toString());
     if (trimmed) params.set("q", trimmed);
     else params.delete("q");
+    // A new search is a new result set: page 3 of the old one means nothing.
+    params.delete("page");
 
     setSentQuery(trimmed);
     const search = params.toString();

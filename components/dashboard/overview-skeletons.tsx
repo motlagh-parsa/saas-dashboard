@@ -105,7 +105,7 @@ export function PlanMixSkeleton() {
         {Array.from({ length: 4 }).map((_, index) => (
           <div key={index} className="flex items-center gap-3">
             <Skeleton className="h-3 w-20 shrink-0" />
-            <Skeleton className="h-3.5 flex-1 rounded-sm" />
+            <Skeleton className="h-3.5 w-full min-w-0 flex-1 rounded-sm" />
           </div>
         ))}
       </CardContent>

@@ -1,7 +1,7 @@
 "use client";
 
-// Per-row controls on /dashboard/users: change role, edit, suspend or unsuspend,
-// and delete.
+// Per-row controls on /dashboard/users: change role, edit, resend invite,
+// suspend or unsuspend, and delete.
 //
 // What is OFFERED here is decided on the server (lib/user-permissions.ts) and
 // arrives as props. Every action re-checks it in lib/user-actions.ts, which is
@@ -15,12 +15,23 @@
 import { startTransition, useActionState, useId, useState } from "react";
 import type { FormEvent } from "react";
 import type { Role } from "@prisma/client";
-import { ChevronDown, Loader2, Trash2 } from "lucide-react";
+import { ChevronDown, Loader2, Send, Trash2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { formatEnumLabel } from "@/lib/format";
-import { deleteUser, suspendUser, unsuspendUser, updateUserRole } from "@/lib/user-actions";
-import { IDLE_USER_ACTION, type UserActionState } from "@/lib/user-action-state";
+import {
+  deleteUser,
+  resendInvite,
+  suspendUser,
+  unsuspendUser,
+  updateUserRole,
+} from "@/lib/user-actions";
+import {
+  IDLE_RESEND_INVITE,
+  IDLE_USER_ACTION,
+  type ResendInviteState,
+  type UserActionState,
+} from "@/lib/user-action-state";
 import { ROLES } from "@/lib/user-permissions";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,6 +53,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { EditUserDialog } from "@/components/dashboard/edit-user-dialog";
+import { InviteLinkPanel } from "@/components/dashboard/invite-link-panel";
 import { toast } from "@/components/dashboard/use-toast";
 
 /** Touch first: 44px on a phone, tightened to the table's density on a pointer. */
@@ -58,6 +70,8 @@ interface UserRowActionsProps {
   displayName: string;
   role: Role;
   suspended: boolean;
+  /** Invited and never accepted — decided on the server; offers "Resend invite". */
+  invitePending: boolean;
   /** Roles the caller may set on this person. Empty means the role is out of reach. */
   assignableRoles: readonly Role[];
   /** Whether edit, suspend and delete are offered: the caller outranks them everywhere they belong. */
@@ -71,10 +85,13 @@ export function UserRowActions({
   displayName,
   role,
   suspended,
+  invitePending,
   assignableRoles,
   canManageAccount,
 }: UserRowActionsProps) {
   const canChangeRole = assignableRoles.length > 0;
+  // The new link, once the server has issued it. Its presence opens the dialog.
+  const [resentToken, setResentToken] = useState<string | null>(null);
 
   /**
    * Wraps an action so success and refusal both surface as a toast. Closing
@@ -106,8 +123,23 @@ export function UserRowActions({
     IDLE_USER_ACTION,
   );
 
+  // Not `reported`: success opens a dialog with the link rather than a toast,
+  // and it is set here, in the action's completion path, not in an effect.
+  const [, resendAction, resendPending] = useActionState(
+    async (previous: ResendInviteState, formData: FormData): Promise<ResendInviteState> => {
+      const result = await resendInvite(previous, formData);
+      if (result.status === "success" && result.token !== null) {
+        setResentToken(result.token);
+      } else if (result.status === "error") {
+        toast.error("Could not resend invite", { description: result.message ?? undefined });
+      }
+      return result;
+    },
+    IDLE_RESEND_INVITE,
+  );
+
   const togglePending = suspendPending || unsuspendPending;
-  const busy = rolePending || togglePending;
+  const busy = rolePending || togglePending || resendPending;
 
   function changeRole(next: string): void {
     if (busy || next === role) return;
@@ -176,6 +208,27 @@ export function UserRowActions({
               className={CONTROL_HEIGHT}
             />
 
+            {invitePending ? (
+              <form action={resendAction} onSubmit={guard}>
+                <input type="hidden" name="organizationId" value={organizationId} />
+                <input type="hidden" name="userId" value={userId} />
+                <Button
+                  type="submit"
+                  variant="outline"
+                  aria-disabled={busy ? "true" : undefined}
+                  aria-label={`Resend invite to ${displayName}`}
+                  className={cn("px-2.5", CONTROL_HEIGHT)}
+                >
+                  {resendPending ? (
+                    <Loader2 aria-hidden className="animate-spin" />
+                  ) : (
+                    <Send aria-hidden />
+                  )}
+                  <span className="hidden lg:inline">Resend invite</span>
+                </Button>
+              </form>
+            ) : null}
+
             <form action={suspended ? unsuspendAction : suspendAction} onSubmit={guard}>
               <input type="hidden" name="organizationId" value={organizationId} />
               <input type="hidden" name="userId" value={userId} />
@@ -200,6 +253,23 @@ export function UserRowActions({
           </>
         ) : null}
       </div>
+
+      <Dialog
+        open={resentToken !== null}
+        onOpenChange={(next) => {
+          if (!next) setResentToken(null);
+        }}
+      >
+        <DialogContent showCloseButton={false} className="sm:max-w-md">
+          {resentToken !== null ? (
+            <InviteLinkPanel
+              title={`New invite for ${displayName}`}
+              description="Share this link with the user. It expires in 7 days, and the previous link no longer works."
+              token={resentToken}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       {canChangeRole && !canManageAccount ? (
         <p className="max-w-56 text-right text-[0.6875rem] text-muted-foreground text-balance">

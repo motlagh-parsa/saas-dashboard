@@ -1,7 +1,14 @@
-// Route-group loading fallback for the (dashboard) segment. Renders inside the
+// Segment loading fallback for /dashboard — the overview. Renders inside the
 // shell, so it only skeletons the content — and it reuses the exact shapes the
 // overview's own <Suspense> boundaries use, so nothing reflows when the real
 // panels arrive.
+//
+// Why it lives in the `(overview)` route group rather than at `dashboard/`: a
+// loading.tsx wraps its segment AND every route nested under it. At `dashboard/`
+// (or the group root, where it used to be) it was an ancestor boundary of every
+// other dashboard page, so a hard load of /dashboard/audit could flash the
+// overview's silhouette before its own. Inside the group it wraps the overview
+// page only; the URL is unchanged, because route groups do not appear in it.
 import { OverviewSkeleton } from "@/components/dashboard/overview-skeletons";
 
 export default function DashboardLoading() {

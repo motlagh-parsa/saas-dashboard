@@ -12,3 +12,15 @@ export interface UserActionState {
 }
 
 export const IDLE_USER_ACTION: UserActionState = { status: "idle", message: null };
+
+/** `resendInvite`'s result: on success, the new raw invite token — shown once. */
+export interface ResendInviteState extends UserActionState {
+  readonly token: string | null;
+}
+
+export const IDLE_RESEND_INVITE: ResendInviteState = { ...IDLE_USER_ACTION, token: null };
+
+/** `exportUsersCSV`'s result: the file's text and a name to save it under. */
+export type ExportUsersResult =
+  | { readonly status: "success"; readonly csv: string; readonly filename: string; readonly count: number }
+  | { readonly status: "error"; readonly message: string };

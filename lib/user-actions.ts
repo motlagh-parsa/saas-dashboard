@@ -49,7 +49,11 @@ import { requireSession } from "@/lib/auth";
 import { formatPersonName } from "@/lib/format";
 import { issueInvite } from "@/lib/invite-token";
 import { prisma } from "@/lib/prisma";
-import type { UserActionState } from "@/lib/user-action-state";
+import type {
+  ExportUsersResult,
+  ResendInviteState,
+  UserActionState,
+} from "@/lib/user-action-state";
 import {
   EMAIL_TAKEN,
   createUserSchema,
@@ -58,7 +62,9 @@ import {
   type CreateUserFormState,
   type UserFormState,
 } from "@/lib/user-form";
+import { parseSortDirection, parseUserQuery, parseUserSort } from "@/lib/user-list";
 import { assignableRoles, canManage, hasAccountReach } from "@/lib/user-permissions";
+import { userListOrderBy, userListWhere } from "@/lib/user-query";
 
 const STALE_PAGE = "This page is out of date. Reload it and try again.";
 const CONFLICT = "Someone else changed this workspace's members at the same moment. Try again.";
@@ -494,4 +500,159 @@ export async function updateUser(
   if (entry !== null) audit(entry);
   revalidatePath(USERS_PATH);
   return { status: "success", message: null, fieldErrors: {} };
+}
+
+// ---------------------------------------------------------------------------
+// Resend invite
+// ---------------------------------------------------------------------------
+
+/**
+ * Issues a fresh invite link for an account that was invited and never set a
+ * password, and returns the new raw token ONCE for the row's dialog to show.
+ * The new hash overwrites the old one, so the previous link stops working.
+ *
+ * "Was invited" is decided by an outstanding invite (`inviteToken` set — an
+ * expired one included), NOT by a missing `passwordHash` alone. The demo
+ * account and GitHub-only users have no hash either, and a fresh invite for one
+ * of them would hand the admin a link that sets a password on someone else's
+ * account. Account reach applies for the same reason as suspend and delete.
+ */
+export async function resendInvite(
+  _previous: ResendInviteState,
+  formData: FormData,
+): Promise<ResendInviteState> {
+  const target = await readTarget(formData);
+  if (target === null) return { ...failure(STALE_PAGE), token: null };
+
+  let token: string | null = null;
+  let entry: AuditEntry | null = null;
+  const result = await inTransaction(async (tx) => {
+    const roles = await checkRoles(tx, target);
+    if (!roles.ok) return failure(roles.message);
+    const reach = await checkAccountReach(tx, target);
+    if (reach !== null) return failure(reach);
+
+    const invite = issueInvite();
+    // Conditional on the invite still being outstanding, so an acceptance that
+    // lands in the meantime cannot be undone by a fresh token.
+    const { count } = await tx.user.updateMany({
+      where: { id: target.userId, passwordHash: null, inviteToken: { not: null } },
+      data: { inviteToken: invite.tokenHash, inviteExpiresAt: invite.expiresAt },
+    });
+    if (count === 0) {
+      return failure("This user has already accepted their invite, or was never invited.");
+    }
+
+    token = invite.token;
+    entry = {
+      organizationId: target.organizationId,
+      actorId: target.callerId,
+      action: "user.invite_resent",
+      targetType: "user",
+      targetId: target.userId,
+      targetLabel: roles.targetLabel,
+      metadata: { resendInvite: true },
+    };
+    return success("Invite resent.");
+  });
+
+  if (result.status !== "success" || token === null) return { ...result, token: null };
+
+  if (entry !== null) audit(entry);
+  revalidatePath(USERS_PATH);
+  return { ...result, token };
+}
+
+// ---------------------------------------------------------------------------
+// CSV export
+// ---------------------------------------------------------------------------
+
+/**
+ * Leading characters a spreadsheet treats as the start of a formula. Names are
+ * user-controlled (registration, Profile, Add user), so a name like
+ * `=HYPERLINK(...)` must arrive as text, not run on the admin's machine.
+ * Prefixing an apostrophe is OWASP's recommended neutralisation.
+ */
+const FORMULA_START = /^[=+\-@\t\r]/;
+
+/** One RFC 4180 field: formula-guarded, quotes doubled, always quoted. */
+function csvField(value: string): string {
+  const safe = FORMULA_START.test(value) ? `'${value}` : value;
+  return `"${safe.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Every member of the rendered workspace matching the table's current search,
+ * in the table's current order — all pages, not just the one on screen — as CSV.
+ *
+ * OWNER and ADMIN only: the table itself is visible to members, but a one-click
+ * file of every email address is an administrator's tool. The export is
+ * recorded in the audit log for the same reason.
+ *
+ * The file starts with a UTF-8 byte-order mark so Excel reads accented names
+ * correctly, and uses CRLF line endings, per RFC 4180.
+ */
+export async function exportUsersCSV(
+  organizationId: string,
+  rawQuery: string,
+  rawSort: string,
+  rawDir: string,
+): Promise<ExportUsersResult> {
+  const session = await requireSession();
+
+  const org = idSchema.safeParse(organizationId);
+  if (!org.success) return { status: "error", message: STALE_PAGE };
+
+  // Composite primary key — a miss for any org the caller does not belong to.
+  const caller = await prisma.membership.findUnique({
+    where: { userId_organizationId: { userId: session.user.id, organizationId: org.data } },
+    select: { role: true, organization: { select: { slug: true } } },
+  });
+  if (caller === null) return { status: "error", message: STALE_PAGE };
+  if (caller.role === "MEMBER") {
+    return { status: "error", message: "Only owners and admins can export users." };
+  }
+
+  // The same narrowing the page applies to its URL — nothing reaches the query raw.
+  const query = parseUserQuery(rawQuery);
+  const rows = await prisma.membership.findMany({
+    where: userListWhere(org.data, query),
+    orderBy: userListOrderBy(parseUserSort(rawSort), parseSortDirection(rawDir)),
+    select: {
+      role: true,
+      createdAt: true,
+      user: { select: { name: true, email: true, suspendedAt: true } },
+    },
+  });
+
+  const header = ["Name", "Email", "Role", "Status", "Joined"];
+  const lines = rows.map((row) =>
+    [
+      row.user.name ?? "",
+      row.user.email,
+      row.role,
+      row.user.suspendedAt === null ? "Active" : "Suspended",
+      row.createdAt.toISOString(),
+    ]
+      .map(csvField)
+      .join(","),
+  );
+  const csv = `﻿${[header.map(csvField).join(","), ...lines].join("\r\n")}\r\n`;
+
+  audit({
+    organizationId: org.data,
+    actorId: session.user.id,
+    action: "users.exported",
+    targetType: "workspace",
+    targetId: org.data,
+    metadata: { count: rows.length, query: query || null },
+  });
+
+  const day = new Date().toISOString().slice(0, 10);
+  return {
+    status: "success",
+    csv,
+    filename: `users-${caller.organization.slug}-${day}.csv`,
+    count: rows.length,
+  };
 }

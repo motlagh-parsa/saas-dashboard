@@ -16,6 +16,8 @@ export const AUDIT_ACTION_LABELS = {
   "user.suspended": "Suspended user",
   "user.unsuspended": "Unsuspended user",
   "user.deleted": "Deleted user",
+  "user.invite_resent": "Resent invite",
+  "users.exported": "Exported users",
   "role.changed": "Changed role",
   "workspace.renamed": "Renamed workspace",
   "workspace.left": "Left workspace",
@@ -79,6 +81,13 @@ export function auditDetails(action: string, metadata: Prisma.JsonValue | null):
       const from = text(data, "from");
       const to = text(data, "to");
       return to ? `${from ?? EM_DASH} → ${to}` : EM_DASH;
+    }
+    case "users.exported": {
+      const count = integer(data, "count");
+      const query = text(data, "query");
+      if (count === null) return EM_DASH;
+      const rows = `${count} ${count === 1 ? "user" : "users"} to CSV`;
+      return query ? `${rows}, matching “${query}”` : rows;
     }
     case "subscription.created": {
       const tier = text(data, "tier");

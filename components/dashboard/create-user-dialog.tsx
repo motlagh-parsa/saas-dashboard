@@ -16,9 +16,10 @@
 // so this is the admin's only chance to copy it. Closing the dialog drops it,
 // and reopening starts a fresh add.
 import { useActionState, useId, useState } from "react";
-import type { FocusEvent, FormEvent } from "react";
+import type { FormEvent } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { Role } from "@prisma/client";
-import { Check, Copy, Loader2, Plus, TriangleAlert } from "lucide-react";
+import { Loader2, Plus, TriangleAlert } from "lucide-react";
 
 import { formatEnumLabel } from "@/lib/format";
 import { createUser } from "@/lib/user-actions";
@@ -44,6 +45,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { InviteLinkPanel } from "@/components/dashboard/invite-link-panel";
 import { toast } from "@/components/dashboard/use-toast";
 
 interface UserDraft {
@@ -66,12 +68,21 @@ interface CreateUserDialogProps {
   organizationId: string;
   /** Roles the caller may hand out: an admin cannot add an owner. */
   roles: readonly Role[];
+  /**
+   * Start open — the page passes this for `?action=add`, which is where the ⌘K
+   * palette's "Add user" lands. Read once, on mount; the page keys the dialog on
+   * it so a second arrival remounts it open.
+   */
+  openOnMount?: boolean;
 }
 
-export function CreateUserDialog({ organizationId, roles }: CreateUserDialogProps) {
-  const [open, setOpen] = useState<boolean>(false);
+export function CreateUserDialog({ organizationId, roles, openOnMount = false }: CreateUserDialogProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [open, setOpen] = useState<boolean>(openOnMount);
   // Bumped on every open, so the form below mounts fresh each time.
-  const [attempt, setAttempt] = useState<number>(0);
+  const [attempt, setAttempt] = useState<number>(openOnMount ? 1 : 0);
   // Set by a successful add; its presence IS the second step.
   const [invite, setInvite] = useState<AddedUser | null>(null);
 
@@ -81,6 +92,15 @@ export function CreateUserDialog({ organizationId, roles }: CreateUserDialogProp
       setInvite(null);
     }
     setOpen(next);
+
+    // Closing consumes `?action=add`, so a refresh or Back does not reopen a
+    // dialog the admin already dismissed. Every other param is kept.
+    if (!next && searchParams.has("action")) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("action");
+      const search = params.toString();
+      router.replace(search ? `${pathname}?${search}` : pathname, { scroll: false });
+    }
   }
 
   return (
@@ -114,7 +134,11 @@ export function CreateUserDialog({ organizationId, roles }: CreateUserDialogProp
             />
           </>
         ) : (
-          <InviteLinkStep invite={invite} />
+          <InviteLinkPanel
+            title={`${invite.name} was added`}
+            description="Share this link with the user. It expires in 7 days."
+            token={invite.inviteToken}
+          />
         )}
       </DialogContent>
     </Dialog>
@@ -285,86 +309,3 @@ function CreateUserForm({ organizationId, roles, onAdded }: CreateUserFormProps)
   );
 }
 
-// ---------------------------------------------------------------------------
-// Step two — the invite link, shown once
-// ---------------------------------------------------------------------------
-
-type CopyState = "idle" | "copied" | "failed";
-
-function InviteLinkStep({ invite }: { invite: AddedUser }) {
-  const [copy, setCopy] = useState<CopyState>("idle");
-  const inputId = useId();
-  const hintId = useId();
-
-  // Built on the client from the origin the admin is actually using, so the link
-  // is right behind a proxy or on a preview deployment without any config. This
-  // step only ever renders after a submit, never during SSR.
-  const link = `${window.location.origin}/invite/${invite.inviteToken}`;
-
-  async function handleCopy(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(link);
-      setCopy("copied");
-    } catch {
-      // Clipboard access can be refused (permissions, insecure origin). The link
-      // is still on screen and selectable, so say so rather than fail silently.
-      setCopy("failed");
-    }
-  }
-
-  function selectAll(event: FocusEvent<HTMLInputElement>): void {
-    event.currentTarget.select();
-  }
-
-  return (
-    <>
-      <DialogHeader>
-        <DialogTitle>{invite.name} was added</DialogTitle>
-        <DialogDescription>Share this link with the user. It expires in 7 days.</DialogDescription>
-      </DialogHeader>
-
-      <div className="grid gap-2">
-        <Label htmlFor={inputId}>Invite link</Label>
-        <div className="flex gap-2">
-          <Input
-            id={inputId}
-            readOnly
-            value={link}
-            onFocus={selectAll}
-            aria-describedby={hintId}
-            className="h-11 min-w-0 font-mono text-xs sm:h-8"
-          />
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => void handleCopy()}
-            className="h-11 shrink-0 px-3 sm:h-8"
-          >
-            {copy === "copied" ? <Check aria-hidden /> : <Copy aria-hidden />}
-            {copy === "copied" ? "Copied" : "Copy link"}
-          </Button>
-        </div>
-        <p
-          id={hintId}
-          aria-live="polite"
-          className={copy === "failed" ? ERROR_CLASS : "text-xs text-muted-foreground"}
-        >
-          {copy === "failed"
-            ? "Couldn't copy automatically. Select the link and copy it yourself."
-            : "Anyone with this link can set this account's password, so send it only to them. It won't be shown again."}
-        </p>
-      </div>
-
-      <DialogFooter>
-        <DialogClose asChild>
-          <Button
-            type="button"
-            className="h-11 bg-brand text-brand-foreground hover:bg-brand/90 sm:h-8"
-          >
-            Done
-          </Button>
-        </DialogClose>
-      </DialogFooter>
-    </>
-  );
-}
