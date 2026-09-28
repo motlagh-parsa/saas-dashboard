@@ -19,12 +19,12 @@ import { getActiveOrgId } from "@/lib/active-org";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
-  getActiveSubscriptions,
+  getCustomerActivity,
   getMRRTrend,
   getMetricsSummary,
   getNetRevenueRetention,
+  getPlanMix,
   getRecentInvoices,
-  getUserActivity,
   resolvePeriod,
 } from "@/lib/metrics";
 import { formatDay } from "@/lib/format";
@@ -39,7 +39,7 @@ import {
   KpiStrip,
   PlanMixPanel,
   RetentionSection,
-  UserActivityStrip,
+  CustomerActivityStrip,
 } from "@/components/dashboard/overview-sections";
 import {
   HeadlinePanelSkeleton,
@@ -47,7 +47,7 @@ import {
   KpiStripSkeleton,
   PlanMixSkeleton,
   RetentionLedgerSkeleton,
-  UserActivityStripSkeleton,
+  CustomerActivityStripSkeleton,
 } from "@/components/dashboard/overview-skeletons";
 
 export const metadata: Metadata = {
@@ -109,15 +109,15 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   // The header names the workspace the figures belong to.
   const organization = await prisma.organization.findUniqueOrThrow({
     where: { id: organizationId },
-    select: { name: true },
+    select: { name: true, currency: true },
   });
 
   const summaryPromise = eager(getMetricsSummary(organizationId, period));
   const trendPromise = eager(getMRRTrend(organizationId, 12));
   const retentionPromise = eager(getNetRevenueRetention(organizationId, period));
-  const subscriptionsPromise = eager(getActiveSubscriptions(organizationId));
+  const planMixPromise = eager(getPlanMix(organizationId));
   const invoicesPromise = eager(getRecentInvoices(organizationId, 8));
-  const activityPromise = eager(getUserActivity(organizationId, period));
+  const activityPromise = eager(getCustomerActivity(organizationId, period));
 
   return (
     <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -180,17 +180,17 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
       </div>
 
       {/*
-        Its own row and its own boundary: the user figures come from a different
+        Its own row and its own boundary: the customer counts come from a different
         source (daily snapshots) than the revenue tiles above, so a failure or a
         slow query here must not take those down with it.
       */}
       <div className="rise [animation-delay:150ms]">
         <SectionBoundary
-          title="User activity didn't load"
+          title="Customer counts didn't load"
           description="The snapshot query failed. Retry it — the revenue figures above are unaffected."
         >
-          <Suspense fallback={<UserActivityStripSkeleton />}>
-            <UserActivityStrip activityPromise={activityPromise} comparison={option.comparison} />
+          <Suspense fallback={<CustomerActivityStripSkeleton />}>
+            <CustomerActivityStrip activityPromise={activityPromise} comparison={option.comparison} />
           </Suspense>
         </SectionBoundary>
       </div>
@@ -201,7 +201,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           description="The subscription breakdown failed to fetch. Retry it, or read the totals above in the meantime."
         >
           <Suspense fallback={<PlanMixSkeleton />}>
-            <PlanMixPanel subscriptionsPromise={subscriptionsPromise} />
+            <PlanMixPanel planMixPromise={planMixPromise} currency={organization.currency} />
           </Suspense>
         </SectionBoundary>
 
@@ -210,7 +210,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           description="Billing history failed to fetch. Retry it — no invoice was affected, only this view."
         >
           <Suspense fallback={<InvoicesSkeleton />}>
-            <InvoicesPanel invoicesPromise={invoicesPromise} />
+            <InvoicesPanel invoicesPromise={invoicesPromise} currency={organization.currency} />
           </Suspense>
         </SectionBoundary>
       </div>

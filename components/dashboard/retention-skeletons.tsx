@@ -17,8 +17,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 export function RetentionTilesSkeleton() {
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid gap-3 sm:grid-cols-2">
-        {Array.from({ length: 2 }).map((_, index) => (
+      <div className="grid gap-3 sm:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, index) => (
           <Card key={index} size="sm" className="gap-3">
             <CardContent className="flex items-center justify-between">
               <Skeleton className="h-3 w-36" />

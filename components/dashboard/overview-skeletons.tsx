@@ -72,10 +72,10 @@ export function KpiStripSkeleton() {
   );
 }
 
-export function UserActivityStripSkeleton() {
+export function CustomerActivityStripSkeleton() {
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      {Array.from({ length: 2 }).map((_, index) => (
+    <div className="grid gap-3 sm:grid-cols-3">
+      {Array.from({ length: 3 }).map((_, index) => (
         <Card key={index} size="sm" className="gap-3">
           <CardContent className="flex items-center justify-between">
             <Skeleton className="h-3 w-24" />
@@ -156,7 +156,7 @@ export function OverviewSkeleton() {
       </div>
 
       <KpiStripSkeleton />
-      <UserActivityStripSkeleton />
+      <CustomerActivityStripSkeleton />
 
       <div className="grid gap-3 xl:grid-cols-[1fr_1.6fr]">
         <PlanMixSkeleton />

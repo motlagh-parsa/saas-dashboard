@@ -1,4 +1,4 @@
-import { ArrowLeftRight, ChartSpline, Repeat, UserMinus } from "lucide-react";
+import { ArrowLeftRight, ChartSpline, Repeat, TrendingDown, UserMinus } from "lucide-react";
 
 import type {
   ChurnRateTrendPoint,
@@ -84,11 +84,12 @@ interface RetentionTilesProps {
 }
 
 /**
- * NRR and churn, both scoped to the period control in the header.
+ * NRR and the two churn rates, all scoped to the period control in the header.
  *
- * NRR is set larger and carries the brass rule, because it is the figure this
- * page exists to report. Two identically weighted tiles would say the two numbers
- * matter equally, and on a retention page they do not.
+ * NRR carries the brass rule, because it is the figure this page exists to
+ * report. The two churn rates sit beside it and say which churn they are:
+ * CUSTOMER churn counts logos (every customer weighs the same), REVENUE churn
+ * weighs them by the MRR that left. Both follow the same opening cohort as NRR.
  */
 export async function RetentionTiles({
   summaryPromise,
@@ -96,26 +97,23 @@ export async function RetentionTiles({
   comparison,
 }: RetentionTilesProps) {
   const [summary, retention] = await Promise.all([summaryPromise, nrrPromise]);
-  const { churnRate } = summary;
-  const { cohortSize, nrr } = retention;
+  const { customerChurnRate, revenueChurnRate } = summary;
+  const { cohortCustomers, nrr } = retention;
 
   // "previous 30 days" -> "30 days", so it reads as a window rather than a
   // comparison when it follows "in the last".
   const windowLabel: string = comparison.replace("previous ", "");
 
-  // The two tiles do NOT share a denominator, and that has to be said next to
-  // them rather than in a footnote nobody reads. NRR follows paying segments
-  // only; churn counts every live segment, free tiers included.
-  const denominatorNote: string =
-    cohortSize === 0
-      ? `No paying subscription was live when this period opened, so retention has no cohort to follow yet. Churn is still measured over the same ${windowLabel}.`
-      : `Retention follows the ${formatCount(cohortSize)} paying ${
-          cohortSize === 1 ? "subscription" : "subscriptions"
-        } that were live when the period opened. Churn counts every live subscription, free tiers included, so the two denominators differ on purpose.`;
+  const cohortNote: string =
+    cohortCustomers === 0
+      ? "No customer was paying when this period opened, so retention and churn have no cohort to follow yet."
+      : `All three follow the ${formatCount(cohortCustomers)} ${
+          cohortCustomers === 1 ? "customer" : "customers"
+        } who were paying when the period opened, over the last ${windowLabel}. Customers who started during the period count toward growth, not retention.`;
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
         <MetricTile
           label="Net revenue retention"
           icon={Repeat}
@@ -132,28 +130,39 @@ export async function RetentionTiles({
         </MetricTile>
 
         <MetricTile
-          label="Churn rate"
+          label="Customer churn"
           icon={UserMinus}
           delta={
             // Points, not percent: a percent change of a percentage reads a one
             // point move as a catastrophe. Up is bad here, so the colour flips.
-            <DeltaBadge value={churnRate.changePoints} unit="points" goodDirection="down" />
+            <DeltaBadge value={customerChurnRate.changePoints} unit="points" goodDirection="down" />
           }
-          footnote={
-            churnRate.current === null
-              ? "No subscriptions were live at period start"
-              : `Cancelled in the last ${windowLabel}`
-          }
+          footnote="Share of paying customers who stopped paying"
         >
-          {churnRate.current === null ? (
+          {customerChurnRate.current === null ? (
             <span className="text-muted-foreground">{EM_DASH}</span>
           ) : (
-            <CountUp value={churnRate.current} format="percent" digits={1} />
+            <CountUp value={customerChurnRate.current} format="percent" digits={1} />
+          )}
+        </MetricTile>
+
+        <MetricTile
+          label="Revenue churn"
+          icon={TrendingDown}
+          delta={
+            <DeltaBadge value={revenueChurnRate.changePoints} unit="points" goodDirection="down" />
+          }
+          footnote="Share of starting MRR that left with churned customers"
+        >
+          {revenueChurnRate.current === null ? (
+            <span className="text-muted-foreground">{EM_DASH}</span>
+          ) : (
+            <CountUp value={revenueChurnRate.current} format="percent" digits={1} />
           )}
         </MetricTile>
       </div>
 
-      <p className={cn(FOOTNOTE, "text-balance")}>{denominatorNote}</p>
+      <p className={cn(FOOTNOTE, "text-balance")}>{cohortNote}</p>
     </div>
   );
 }
@@ -178,13 +187,11 @@ export async function NrrTrendPanel({ movementPromise }: NrrTrendPanelProps) {
     heading: formatMonthLong(point.month),
     value: point.nrr,
     valueLabel: point.nrr === null ? EM_DASH : formatPercent(point.nrr, 1),
-    // "Lifecycles", never "customers": this is a CHAIN count, and the schema has
-    // no customer entity to promise one.
     cohortLabel:
-      point.payingChainsAtStart === 0
+      point.payingCustomersAtStart === 0
         ? "Nothing was billing when the month opened"
-        : `${formatCount(point.payingChainsAtStart)} paying ${
-            point.payingChainsAtStart === 1 ? "lifecycle" : "lifecycles"
+        : `${formatCount(point.payingCustomersAtStart)} paying ${
+            point.payingCustomersAtStart === 1 ? "customer" : "customers"
           } at the open`,
     // Only the endpoint is labelled; everything else is the axis and the tooltip.
     labelText:
@@ -222,7 +229,7 @@ export async function NrrTrendPanel({ movementPromise }: NrrTrendPanelProps) {
             description={
               data.length === 0
                 ? "The line draws itself once a subscription has billed across a month boundary."
-                : "Every month so far opened with no paying subscription, so retention has no defined value in any of them."
+                : "Every month so far opened with no paying customer, so retention has no defined value in any of them."
             }
             className="border-0 bg-transparent py-10"
           />
@@ -267,11 +274,11 @@ export async function ChurnTrendPanel({ churnTrendPromise }: ChurnTrendPanelProp
     value: point.rate,
     valueLabel: point.rate === null ? EM_DASH : formatPercent(point.rate, 1),
     cohortLabel:
-      point.activeAtStart === 0
-        ? "No subscription was live when the month opened"
-        : `${formatCount(point.churned)} of ${formatCount(
-            point.activeAtStart,
-          )} cancelled`,
+      point.customersAtStart === 0
+        ? "No customer was paying when the month opened"
+        : `${formatCount(point.churnedCustomers)} of ${formatCount(
+            point.customersAtStart,
+          )} customers left · revenue churn ${formatPercent(point.revenueRate, 1)}`,
     labelText:
       index === lastIndex && point.rate !== null ? formatPercent(point.rate, 1) : null,
   }));
@@ -283,7 +290,7 @@ export async function ChurnTrendPanel({ churnTrendPromise }: ChurnTrendPanelProp
       <CardHeader>
         <div className="flex items-center gap-2">
           <span aria-hidden className="size-1.5 rounded-full bg-negative" />
-          <h2 className={EYEBROW}>Churn over time</h2>
+          <h2 className={EYEBROW}>Customer churn over time</h2>
         </div>
         {hasSeries ? (
           <CardAction>
@@ -302,7 +309,7 @@ export async function ChurnTrendPanel({ churnTrendPromise }: ChurnTrendPanelProp
             description={
               data.length === 0
                 ? "The line draws itself once a full calendar month has passed."
-                : "Every month so far opened with no live subscription, so there was no cohort that could churn."
+                : "Every month so far opened with no paying customer, so there was no cohort that could churn."
             }
             className="border-0 bg-transparent py-10"
           />
@@ -317,9 +324,10 @@ export async function ChurnTrendPanel({ churnTrendPromise }: ChurnTrendPanelProp
             Vertical axis in percent, from zero
           </p>
           <p className={cn(FOOTNOTE, "text-balance")}>
-            Subscriptions live at each month&rsquo;s open that cancelled before it
-            closed. Counted per subscription, not per dollar, so a large account and a
-            small one weigh the same. Twelve months, not scoped to the period above.
+            Customers paying at each month&rsquo;s open who were no longer paying at
+            its close. Counted per customer, not per dollar, so a large account and a
+            small one weigh the same — the tooltip gives revenue churn beside it.
+            Twelve months, not scoped to the period above.
           </p>
         </CardContent>
       ) : null}
@@ -370,7 +378,7 @@ export async function MovementSection({
           <EmptyState
             icon={ArrowLeftRight}
             title="No revenue movement yet"
-            description="This ledger fills in once a subscription has billed across a month boundary. Nothing has moved in this workspace so far."
+            description="This ledger fills in once a customer has paid across a month boundary. Nothing has moved in this workspace so far."
             className="border-0 bg-transparent py-12"
           />
         </CardContent>

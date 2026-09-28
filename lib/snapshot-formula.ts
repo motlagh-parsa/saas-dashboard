@@ -1,64 +1,92 @@
 // The daily MetricSnapshot formula — the ONE definition of what a snapshot row
-// holds, shared by the seed (prisma/seed.ts, which backfills 18 months) and the
-// daily cron (app/api/cron/snapshots/route.ts, which writes one new day). Two
-// copies of these rules would drift, and the MRR trend chart reads seeded rows
-// and cron-written rows side by side.
+// holds, shared by the sample-data generator (lib/sample-data.ts, which backfills
+// 18 months), the daily cron (app/api/cron/snapshots/route.ts) and
+// scripts/verify-metrics.ts. Two copies of these rules would drift, and the MRR
+// trend chart reads rows written by all of them side by side.
 //
 // Pure and dependency-free on purpose: no Prisma client, no `server-only`, no
-// `@/` aliases. The seed runs under ts-node outside Next, where `server-only`
-// throws on import.
+// `@/` aliases — type imports only.
 //
 // ---------------------------------------------------------------------------
-// Conventions (all UTC)
+// Definitions (all instants UTC; "day D" means D's midnight)
 // ---------------------------------------------------------------------------
-// A row for day D describes:
-//   - STATE at D's midnight: which segments are live (`startedAt <= D` and
-//     `endedAt` null or `> D`) — the same predicate lib/metrics.ts uses, so a
-//     segment is inactive ON its `endedAt` instant.
-//   - EVENTS during D: segments starting or ending in [D, D + 1 day).
-// The seed originally compared event instants to midnight exactly; every seeded
-// segment starts and ends on a UTC midnight, so the half-open day range gives
-// identical results on seeded data and also counts real mid-day events.
-import type { BillingInterval, PlanTier } from "@prisma/client";
+//   Monthly MRR of a segment = amountCents × quantity ÷ months in its interval,
+//     where months = intervalCount for MONTH and 12 × intervalCount for YEAR.
+//     Summed EXACTLY (integer arithmetic over a common denominator) and rounded
+//     ONCE, half up, at the end of the sum — never per row.
+//   Live at t:     startedAt <= t AND (endedAt IS NULL OR endedAt > t).
+//   Active customer at t: at least one live segment with MRR > 0.
+//   A row for day D holds the STATE at D and the FLOWS in (D − 1 day, D]:
+//     newCustomers     — active at D, not at D − 1, and never active before.
+//     churnedCustomers — active at D − 1, not at D.
+//     newSubs          — segments starting in (D − 1, D].
+//     churnedSubs      — segments ending in (D − 1, D] by a real cancellation
+//                        (`canceledAt` set). A plan change ends a segment without
+//                        one, so it is not churn.
+//   A customer who returns after being inactive is neither new nor churned on
+//   the day they return — they are a REACTIVATION, which the revenue bridge
+//   (lib/metrics.ts) reports as its own movement.
+import type { BillingInterval } from "@prisma/client";
 
 export const DAY_MS = 86_400_000;
 
-/** Per-tier seat band (base active users). Grows over the life of a segment. */
-const SEATS: Record<PlanTier, number> = {
-  FREE: 3,
-  STARTER: 12,
-  PRO: 45,
-  ENTERPRISE: 180,
-};
-
-/** One subscription segment, as far as the snapshot formula needs it. */
+/** One subscription segment, as far as the formula needs it. */
 export interface SnapshotSegment {
   readonly id: string;
-  readonly tier: PlanTier;
-  readonly interval: BillingInterval;
+  readonly customerId: string;
   readonly amountCents: number;
+  readonly quantity: number;
+  readonly interval: BillingInterval;
+  readonly intervalCount: number;
   readonly startedAt: Date;
   readonly endedAt: Date | null;
+  readonly canceledAt: Date | null;
 }
 
-/** The six measured columns of a `MetricSnapshot` row. */
+/** The measured columns of a `MetricSnapshot` row. */
 export interface SnapshotMetrics {
   readonly mrrCents: number;
   readonly activeSubs: number;
   readonly newSubs: number;
   readonly churnedSubs: number;
-  readonly activeUsers: number;
-  readonly newUsers: number;
+  readonly activeCustomers: number;
+  readonly newCustomers: number;
+  readonly churnedCustomers: number;
 }
 
-/** Monthly-normalized amount used for MRR: FREE is 0, YEARLY is spread over 12 months. */
-export function normalizedMonthlyCents(
-  tier: PlanTier,
-  interval: BillingInterval,
-  amountCents: number,
-): number {
-  if (tier === "FREE") return 0;
-  return interval === "YEARLY" ? Math.round(amountCents / 12) : amountCents;
+type PriceTerms = Pick<SnapshotSegment, "amountCents" | "quantity" | "interval" | "intervalCount">;
+
+/** Months one billing interval spans: MONTH×3 is 3, YEAR×1 is 12. */
+export function monthsInInterval(interval: BillingInterval, intervalCount: number): number {
+  return interval === "YEAR" ? 12 * intervalCount : intervalCount;
+}
+
+function gcd(a: number, b: number): number {
+  return b === 0 ? a : gcd(b, a % b);
+}
+
+/**
+ * Monthly-normalized MRR of a set of segments, in cents: the exact sum of
+ * `amount × quantity ÷ months`, rounded ONCE, half up.
+ *
+ * Exact because every term is put over the least common multiple of the
+ * interval lengths and added as an integer — floating-point division per row
+ * would put errors in the last place of each term, and those can tip a total
+ * that sits exactly on a half-cent the wrong way.
+ */
+export function roundedMonthlyCents(segments: readonly PriceTerms[]): number {
+  let denominator = 1;
+  for (const segment of segments) {
+    const months = monthsInInterval(segment.interval, segment.intervalCount);
+    denominator = (denominator / gcd(denominator, months)) * months;
+  }
+  let numerator = 0;
+  for (const segment of segments) {
+    const months = monthsInInterval(segment.interval, segment.intervalCount);
+    numerator += segment.amountCents * segment.quantity * (denominator / months);
+  }
+  // Half up for a non-negative numerator (amounts are CHECK-constrained >= 0).
+  return Math.floor((2 * numerator + denominator) / (2 * denominator));
 }
 
 /** UTC midnight of the day containing `instant`. */
@@ -68,112 +96,93 @@ export function utcDayStart(instant: Date): Date {
   );
 }
 
-/** Stable, deterministic string hash (djb2 xor). No RNG anywhere. */
-function hashString(input: string): number {
-  let h = 5381;
-  for (let i = 0; i < input.length; i++) {
-    h = ((h << 5) + h) ^ input.charCodeAt(i);
-  }
-  return h >>> 0;
-}
-
-/**
- * Deterministic seat count for a segment on a given day (monotonic in day).
- *
- * SYNTHETIC: the schema records no real seat or login data, so "active users"
- * is a per-tier seat band that ramps over the segment's first year, plus a
- * small stable per-segment offset. It is consistent, not measured.
- */
-function seatCount(segment: SnapshotSegment, orgSlug: string, day: Date): number {
-  const base = SEATS[segment.tier];
-  const daysActive = Math.max(
-    0,
-    Math.floor((day.getTime() - segment.startedAt.getTime()) / DAY_MS),
-  );
-  const ramp = Math.min(1, daysActive / 365); // ramps to full over ~1 year
-  const growth = Math.floor(base * 0.6 * ramp); // up to +60% seats over the year
-  const offset = hashString(`${orgSlug}:${segment.tier}:${segment.startedAt.toISOString()}`) % 4;
-  return base + growth + offset;
-}
-
-function isLiveAt(segment: SnapshotSegment, instantMs: number): boolean {
+export function isLiveAt(segment: SnapshotSegment, instantMs: number): boolean {
   return (
     segment.startedAt.getTime() <= instantMs &&
     (segment.endedAt === null || segment.endedAt.getTime() > instantMs)
   );
 }
 
-function isWithinDay(instant: Date, dayStartMs: number): boolean {
-  const ms = instant.getTime();
-  return ms >= dayStartMs && ms < dayStartMs + DAY_MS;
+/** A segment that bills something and lasts a non-zero span. */
+function isPaying(segment: SnapshotSegment): boolean {
+  return (
+    segment.amountCents * segment.quantity > 0 &&
+    (segment.endedAt === null || segment.endedAt.getTime() > segment.startedAt.getTime())
+  );
 }
 
-function activeUsersOn(orgSlug: string, segments: readonly SnapshotSegment[], day: Date): number {
-  const dayMs = day.getTime();
-  let total = 0;
+/** Customer ids with at least one live paying segment at `instantMs`. */
+export function activeCustomerIds(
+  segments: readonly SnapshotSegment[],
+  instantMs: number,
+): Set<string> {
+  const active = new Set<string>();
   for (const segment of segments) {
-    if (isLiveAt(segment, dayMs)) total += seatCount(segment, orgSlug, day);
+    if (isPaying(segment) && isLiveAt(segment, instantMs)) active.add(segment.customerId);
   }
-  return total;
+  return active;
+}
+
+/** The first instant each customer was ever active (their earliest paying start). */
+export function firstActiveAt(segments: readonly SnapshotSegment[]): Map<string, number> {
+  const first = new Map<string, number>();
+  for (const segment of segments) {
+    if (!isPaying(segment)) continue;
+    const start = segment.startedAt.getTime();
+    const known = first.get(segment.customerId);
+    if (known === undefined || start < known) first.set(segment.customerId, start);
+  }
+  return first;
+}
+
+function endsWithin(instant: Date | null, fromExclusiveMs: number, toInclusiveMs: number): boolean {
+  if (instant === null) return false;
+  const ms = instant.getTime();
+  return ms > fromExclusiveMs && ms <= toInclusiveMs;
 }
 
 /**
  * One organization's snapshot for UTC day `day` (must be a UTC midnight).
  *
- * `segments` must include every segment of the org that is live at `day` or the
- * day before, or starts or ends during `day` — passing the org's full history is
- * always correct.
+ * `segments` must be the organization's FULL subscription history: "new"
+ * means never active before, which only the whole history can answer. Pass
+ * `firstActive` (from `firstActiveAt(segments)`) when computing many days in a
+ * row to avoid recomputing it per day; it is derived when omitted.
  */
 export function computeDaySnapshot(
-  orgSlug: string,
   segments: readonly SnapshotSegment[],
   day: Date,
+  firstActive: ReadonlyMap<string, number> = firstActiveAt(segments),
 ): SnapshotMetrics {
   const dayMs = day.getTime();
   const prevMs = dayMs - DAY_MS;
 
   const live = segments.filter((segment) => isLiveAt(segment, dayMs));
+  const activeNow = activeCustomerIds(segments, dayMs);
+  const activeBefore = activeCustomerIds(segments, prevMs);
 
-  let mrrCents = 0;
-  for (const segment of live) {
-    mrrCents += normalizedMonthlyCents(segment.tier, segment.interval, segment.amountCents);
+  let newCustomers = 0;
+  for (const customerId of activeNow) {
+    if (activeBefore.has(customerId)) continue;
+    const first = firstActive.get(customerId);
+    // Never active at or before D − 1: their first paying instant is after it.
+    if (first !== undefined && first > prevMs) newCustomers += 1;
   }
-  const activeUsers = activeUsersOn(orgSlug, segments, day);
 
-  // New PAID customers: a paid segment starts during the day AND the org had no
-  // live paid segment the day before (excludes paid->paid plan changes, which
-  // are continuations of one customer).
-  const paidStarts = segments.filter(
-    (segment) => segment.tier !== "FREE" && isWithinDay(segment.startedAt, dayMs),
-  ).length;
-  const hadLivePaidBefore = segments.some(
-    (segment) => segment.tier !== "FREE" && isLiveAt(segment, prevMs),
-  );
-  const newSubs = paidStarts > 0 && !hadLivePaidBefore ? paidStarts : 0;
-
-  // Churn: a segment ends during the day with NO segment of the org starting the
-  // same day (a same-day start is a plan-change hand-off, not a departure).
-  const churnedSubs = segments.filter(
-    (segment) =>
-      segment.endedAt !== null &&
-      isWithinDay(segment.endedAt, dayMs) &&
-      !segments.some(
-        (other) => other.id !== segment.id && isWithinDay(other.startedAt, dayMs),
-      ),
-  ).length;
-
-  // Net seats added since the day before, floored at 0.
-  const newUsers = Math.max(
-    0,
-    activeUsers - activeUsersOn(orgSlug, segments, new Date(prevMs)),
-  );
+  let churnedCustomers = 0;
+  for (const customerId of activeBefore) {
+    if (!activeNow.has(customerId)) churnedCustomers += 1;
+  }
 
   return {
-    mrrCents,
+    mrrCents: roundedMonthlyCents(live),
     activeSubs: live.length,
-    newSubs,
-    churnedSubs,
-    activeUsers,
-    newUsers,
+    newSubs: segments.filter((segment) => endsWithin(segment.startedAt, prevMs, dayMs)).length,
+    churnedSubs: segments.filter(
+      (segment) => segment.canceledAt !== null && endsWithin(segment.endedAt, prevMs, dayMs),
+    ).length,
+    activeCustomers: activeNow.size,
+    newCustomers,
+    churnedCustomers,
   };
 }

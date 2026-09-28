@@ -367,6 +367,25 @@ export function formatInitials(source: string): string {
 // Enum labels — the database speaks SCREAMING_CASE, the interface does not
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Billing intervals — Stripe-style: an interval unit plus a count
+// ---------------------------------------------------------------------------
+
+/** `MONTH×1` -> `Monthly`, `MONTH×3` -> `Quarterly`, `YEAR×1` -> `Yearly`, else `Every 6 months`. */
+export function formatBillingInterval(interval: "MONTH" | "YEAR", intervalCount: number): string {
+  if (interval === "MONTH" && intervalCount === 1) return "Monthly";
+  if (interval === "MONTH" && intervalCount === 3) return "Quarterly";
+  if (interval === "YEAR" && intervalCount === 1) return "Yearly";
+  const unit = interval === "MONTH" ? "month" : "year";
+  return `Every ${intervalCount} ${unit}s`;
+}
+
+/** The per-period suffix after a price: `mo`, `yr`, `3 mo`, `2 yr`. */
+export function formatIntervalSuffix(interval: "MONTH" | "YEAR", intervalCount: number): string {
+  const unit = interval === "MONTH" ? "mo" : "yr";
+  return intervalCount === 1 ? unit : `${intervalCount} ${unit}`;
+}
+
 /** `"PAST_DUE"` -> `"Past due"`. */
 export function formatEnumLabel(value: string): string {
   const words = value.toLowerCase().split("_");

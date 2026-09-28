@@ -9,7 +9,6 @@ import {
   ChevronRight,
   CircleSlash,
   FileClock,
-  TriangleAlert,
 } from "lucide-react";
 
 import type {
@@ -64,6 +63,8 @@ import {
  * the route on the slowest statement. The promises are started by the page, in
  * parallel, before any of these is reached.
  *
+ * Every amount is in the workspace's single currency (`summary.currency`).
+ *
  * Everything a client chart receives has already been formatted here. Money never
  * leaves this file as cents-plus-currency, months never leave as Dates, and no
  * function is ever handed across the boundary.
@@ -92,23 +93,6 @@ function revenueHref(
   if (status !== "all") query.set("status", status);
   if (cursors.length > 0) query.set("cursors", encodeCursorStack(cursors));
   return `${REVENUE_PATH}?${query.toString()}`;
-}
-
-/**
- * The schema stores no FX rates, so a multi-currency total adds unlike amounts.
- * That has to be said where the number is, not in a footnote nobody reads.
- */
-function MixedCurrencyNote({ subject }: { subject: string }) {
-  return (
-    <p className="flex items-start gap-2 rounded-md bg-muted/60 px-2.5 py-2 text-xs text-muted-foreground text-balance">
-      <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-brand" aria-hidden />
-      <span>
-        {subject} bill in more than one currency and no exchange rates are stored,
-        so this figure adds unlike amounts. Read it as an approximation until rates
-        are configured.
-      </span>
-    </p>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -285,13 +269,13 @@ function LegendItem({ direction, label }: { direction: BridgeDirection; label: s
 
 interface BridgePanelProps {
   movementPromise: Promise<RevenueMovementPoint[]>;
-  /** Only for the currency and the mixed-currency flag; MRR itself comes from the bridge. */
+  /** Only for the currency; MRR itself comes from the bridge. */
   summaryPromise: Promise<MetricsSummary>;
 }
 
 export async function BridgePanel({ movementPromise, summaryPromise }: BridgePanelProps) {
   const [points, summary] = await Promise.all([movementPromise, summaryPromise]);
-  const { currency, isMixedCurrency } = summary;
+  const { currency } = summary;
 
   if (points.length === 0) {
     return (
@@ -455,12 +439,6 @@ export async function BridgePanel({ movementPromise, summaryPromise }: BridgePan
           {formatDay(first.periodStart)} to {formatMoney(last.endingMRRCents, currency)} on{" "}
           {formatDay(last.periodEnd)}
         </p>
-
-        {isMixedCurrency ? (
-          <div className="mt-3">
-            <MixedCurrencyNote subject="Subscriptions" />
-          </div>
-        ) : null}
       </CardContent>
 
       <CardContent>
@@ -568,8 +546,8 @@ export async function TrendPanel({ trendPromise, summaryPromise }: TrendPanelPro
     heading: formatMonthLong(point.month),
     mrrCents: point.mrrCents,
     amount: formatMoney(point.mrrCents, currency),
-    subscriptions: `${formatCount(point.activeSubs)} active ${
-      point.activeSubs === 1 ? "subscription" : "subscriptions"
+    customers: `${formatCount(point.activeCustomers)} active ${
+      point.activeCustomers === 1 ? "customer" : "customers"
     }`,
     // Only the endpoint is labelled; everything else is the axis and the tooltip.
     labelText: index === lastIndex ? formatMoneyCompact(point.mrrCents, currency) : null,
@@ -690,8 +668,6 @@ export async function RevenueTiles({ summaryPromise, totalsPromise }: RevenueTil
           />
         </MetricTile>
       </div>
-
-      {totals.isMixedCurrency ? <MixedCurrencyNote subject="Invoices" /> : null}
     </div>
   );
 }
@@ -711,6 +687,8 @@ interface InvoiceLedgerProps {
    * so a href-building callback could not travel with it.
    */
   cursors: string[];
+  /** The workspace's reporting currency. */
+  currency: string;
 }
 
 export async function InvoiceLedger({
@@ -718,6 +696,7 @@ export async function InvoiceLedger({
   range,
   status,
   cursors,
+  currency,
 }: InvoiceLedgerProps) {
   const { invoices, nextCursor } = await invoicesPromise;
   const option = statusFilterOption(status);
@@ -796,7 +775,7 @@ export async function InvoiceLedger({
         above: an unpaid invoice stays outstanding until it is settled.
       </p>
 
-      <InvoiceTable invoices={invoices} empty={empty} />
+      <InvoiceTable invoices={invoices} empty={empty} currency={currency} />
 
       {showPager ? (
         <div className="mt-auto flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-2.5">

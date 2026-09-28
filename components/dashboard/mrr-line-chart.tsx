@@ -24,8 +24,8 @@ export interface MRRLineDatum {
   mrrCents: number;
   /** Pre-formatted money for the tooltip. */
   amount: string;
-  /** Pre-formatted subscription count line. */
-  subscriptions: string;
+  /** Pre-formatted active-customer count line. */
+  customers: string;
   /** Direct label, or null. Only the endpoint carries one. */
   labelText: string | null;
 }
@@ -128,7 +128,7 @@ function LineTooltip({ active, payload }: LineTooltipProps) {
         <span aria-hidden className="h-3 w-0.5 rounded-full bg-brand" />
         <span className="font-mono text-sm text-foreground">{point.amount}</span>
       </div>
-      <p className="mt-1 pl-3.5 text-xs text-muted-foreground">{point.subscriptions}</p>
+      <p className="mt-1 pl-3.5 text-xs text-muted-foreground">{point.customers}</p>
     </div>
   );
 }

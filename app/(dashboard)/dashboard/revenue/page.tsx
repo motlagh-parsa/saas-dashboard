@@ -129,12 +129,29 @@ export default async function RevenuePage({ searchParams }: RevenuePageProps) {
   // "Add subscription" is offered — one row, by composite key.
   const membership = await prisma.membership.findUniqueOrThrow({
     where: { userId_organizationId: { userId: session.user.id, organizationId } },
-    select: { role: true, organization: { select: { name: true } } },
+    select: { role: true, organization: { select: { name: true, currency: true } } },
   });
   const organization = membership.organization;
   // The action re-checks this; members are simply not offered a control that
   // would refuse them.
   const canAddSubscription = membership.role !== "MEMBER";
+
+  // What the Add subscription dialog offers: this workspace's own customers and
+  // plans, archived ones excluded. Only fetched for someone who can use it.
+  const [customerOptions, planOptions] = canAddSubscription
+    ? await Promise.all([
+        prisma.customer.findMany({
+          where: { organizationId, archivedAt: null },
+          orderBy: { name: "asc" },
+          select: { id: true, name: true },
+        }),
+        prisma.plan.findMany({
+          where: { organizationId, archivedAt: null },
+          orderBy: [{ amountCents: "asc" }, { name: "asc" }],
+          select: { id: true, name: true, amountCents: true, interval: true, intervalCount: true },
+        }),
+      ])
+    : [[], []];
 
   const summaryPromise = eager(getMetricsSummary(organizationId, period));
   const movementPromise = eager(getRevenueMovement(organizationId, HISTORY_MONTHS));
@@ -167,7 +184,14 @@ export default async function RevenuePage({ searchParams }: RevenuePageProps) {
           set, and a cursor from the old one would point at nothing.
         */}
         <div className="flex flex-wrap items-center gap-2">
-          {canAddSubscription ? <AddSubscriptionDialog organizationId={organizationId} /> : null}
+          {canAddSubscription ? (
+            <AddSubscriptionDialog
+              organizationId={organizationId}
+              currency={organization.currency}
+              customers={customerOptions}
+              plans={planOptions}
+            />
+          ) : null}
           <PeriodControl
             current={range}
             basePath="/dashboard/revenue"
@@ -226,6 +250,7 @@ export default async function RevenuePage({ searchParams }: RevenuePageProps) {
               range={range}
               status={status}
               cursors={cursors}
+              currency={organization.currency}
             />
           </Suspense>
         </SectionBoundary>

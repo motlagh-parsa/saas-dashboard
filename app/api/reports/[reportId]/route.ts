@@ -18,9 +18,10 @@ import "server-only";
 import { getActiveOrgId } from "@/lib/active-org";
 import { requireSession } from "@/lib/auth";
 import {
-  getActiveSubscriptions,
   getChurnRateTrend,
   getMRRTrend,
+  getOrganizationCurrency,
+  getPlanMix,
   getRevenueMovement,
 } from "@/lib/metrics";
 
@@ -30,7 +31,7 @@ const EXPORT_MONTHS = 12;
 type CsvCell = string | number | boolean | null;
 type CsvRow = readonly CsvCell[];
 
-type ReportBuilder = (organizationId: string) => Promise<CsvRow[]>;
+type ReportBuilder = (organizationId: string, currency: string) => Promise<CsvRow[]>;
 
 // ---------------------------------------------------------------------------
 // CSV encoding
@@ -64,24 +65,28 @@ function isoDate(value: Date): string {
 
 // ---------------------------------------------------------------------------
 // Reports
+//
+// Every money column is in the workspace's single currency, and its header says
+// which — a CSV cell carries no currency symbol, and a file travels without the
+// page that explains it.
 // ---------------------------------------------------------------------------
 
-async function buildMrrSummary(organizationId: string): Promise<CsvRow[]> {
+async function buildMrrSummary(organizationId: string, currency: string): Promise<CsvRow[]> {
   const trend = await getMRRTrend(organizationId, EXPORT_MONTHS);
   return [
-    ["Month", "As of", "MRR", "Active subscriptions", "New subscriptions", "Churned subscriptions"],
+    ["Month", "As of", `MRR (${currency})`, "Active customers", "New customers", "Churned customers"],
     ...trend.map((point): CsvRow => [
       point.month,
       point.asOfDate,
       money(point.mrrCents),
-      point.activeSubs,
-      point.newSubs,
-      point.churnedSubs,
+      point.activeCustomers,
+      point.newCustomers,
+      point.churnedCustomers,
     ]),
   ];
 }
 
-async function buildChurnAnalysis(organizationId: string): Promise<CsvRow[]> {
+async function buildChurnAnalysis(organizationId: string, currency: string): Promise<CsvRow[]> {
   const trend = await getChurnRateTrend(organizationId, EXPORT_MONTHS);
   return [
     [
@@ -89,36 +94,46 @@ async function buildChurnAnalysis(organizationId: string): Promise<CsvRow[]> {
       "Period start",
       "Period end",
       "Complete",
-      "Active at start",
-      "Churned",
-      "Churn rate (%)",
+      "Customers at start",
+      "Churned customers",
+      "Customer churn (%)",
+      `Starting MRR (${currency})`,
+      `Churned MRR (${currency})`,
+      "Revenue churn (%)",
     ],
     ...trend.map((point): CsvRow => [
       point.month,
       isoDate(point.period.start),
       isoDate(point.period.end),
       point.isComplete,
-      point.activeAtStart,
-      point.churned,
+      point.customersAtStart,
+      point.churnedCustomers,
       percent(point.rate),
+      money(point.startingMRRCents),
+      money(point.churnedMRRCents),
+      percent(point.revenueRate),
     ]),
   ];
 }
 
-async function buildRevenueBridge(organizationId: string): Promise<CsvRow[]> {
+async function buildRevenueBridge(organizationId: string, currency: string): Promise<CsvRow[]> {
   const movement = await getRevenueMovement(organizationId, EXPORT_MONTHS);
   return [
     [
       "Month",
       "Complete",
-      "Starting MRR",
+      `Starting MRR (${currency})`,
       "New",
       "Reactivation",
       "Expansion",
       "Contraction",
       "Churned",
-      "Ending MRR",
+      `Ending MRR (${currency})`,
       "Net change",
+      "Paying customers at start",
+      "New customers",
+      "Reactivated customers",
+      "Churned customers",
       "NRR (%)",
       "GRR (%)",
     ],
@@ -133,6 +148,10 @@ async function buildRevenueBridge(organizationId: string): Promise<CsvRow[]> {
       money(point.churnedMRRCents),
       money(point.endingMRRCents),
       money(point.endingMRRCents - point.startingMRRCents),
+      point.payingCustomersAtStart,
+      point.newCustomers,
+      point.reactivatedCustomers,
+      point.churnedCustomers,
       percent(point.nrr),
       percent(point.grr),
     ]),
@@ -141,32 +160,27 @@ async function buildRevenueBridge(organizationId: string): Promise<CsvRow[]> {
 
 /**
  * Two sections in one file, separated by a blank row: the monthly MRR and
- * subscription series, then today's live subscriptions by plan tier and by
- * status. Both counts are subscription SEGMENTS, not customers (see the CHAIN VS
- * SEGMENT note in lib/metrics.ts), so the headers say "subscriptions".
+ * customer series, then today's live MRR by plan.
  */
-async function buildRetentionCohorts(organizationId: string): Promise<CsvRow[]> {
-  const [trend, active] = await Promise.all([
+async function buildRetentionCohorts(organizationId: string, currency: string): Promise<CsvRow[]> {
+  const [trend, planMix] = await Promise.all([
     getMRRTrend(organizationId, EXPORT_MONTHS),
-    getActiveSubscriptions(organizationId),
+    getPlanMix(organizationId),
   ]);
 
   return [
-    ["Month", "MRR", "Active subscriptions", "New subscriptions", "Churned subscriptions"],
+    ["Month", `MRR (${currency})`, "Active customers", "New customers", "Churned customers"],
     ...trend.map((point): CsvRow => [
       point.month,
       money(point.mrrCents),
-      point.activeSubs,
-      point.newSubs,
-      point.churnedSubs,
+      point.activeCustomers,
+      point.newCustomers,
+      point.churnedCustomers,
     ]),
     [],
-    [`Active subscriptions as of ${isoDate(active.asOf)}`, active.total],
-    ["Plan tier", "Subscriptions"],
-    ...active.byTier.map((row): CsvRow => [row.tier, row.count]),
-    [],
-    ["Status", "Subscriptions"],
-    ...active.byStatus.map((row): CsvRow => [row.status, row.count]),
+    [`Live MRR by plan as of ${isoDate(planMix.asOf)} (${currency})`, money(planMix.totalMRRCents)],
+    ["Plan", `MRR (${currency})`, "Subscriptions"],
+    ...planMix.byPlan.map((row): CsvRow => [row.name, money(row.mrrCents), row.subscriptions]),
   ];
 }
 
@@ -207,7 +221,8 @@ export async function GET(_request: Request, { params }: RouteContext): Promise<
     return Response.json({ error: "No workspace for this account." }, { status: 403 });
   }
 
-  const rows = await REPORT_BUILDERS[reportId](organizationId);
+  const currency = await getOrganizationCurrency(organizationId);
+  const rows = await REPORT_BUILDERS[reportId](organizationId, currency);
   const filename = `${reportId}-${isoDate(new Date())}.csv`;
 
   return new Response(encodeCsv(rows), {

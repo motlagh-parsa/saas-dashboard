@@ -1,9 +1,7 @@
-import type { PlanTier } from "@prisma/client";
 import {
   CalendarRange,
   ChartSpline,
   Layers,
-  TriangleAlert,
   UserCheck,
   UserMinus,
   UserPlus,
@@ -11,21 +9,21 @@ import {
 } from "lucide-react";
 
 import type {
-  ActiveSubscriptionsResult,
+  CustomerActivitySummary,
   MRRTrendPoint,
   MetricsSummary,
   NetRevenueRetentionResult,
+  PlanMixResult,
   RecentInvoice,
-  UserActivitySummary,
 } from "@/lib/metrics";
 import {
   EM_DASH,
   formatCount,
   formatDay,
-  formatEnumLabel,
   formatMonthLong,
   formatMonthShort,
   formatMoney,
+  formatPercent,
   formatSignedCount,
 } from "@/lib/format";
 import { Card, CardAction, CardContent, CardHeader } from "@/components/ui/card";
@@ -36,7 +34,7 @@ import { InvoiceTable } from "@/components/dashboard/invoice-table";
 import { MetricTile } from "@/components/dashboard/metric-tile";
 import { MRRTrendChart, type MRRTrendDatum } from "@/components/dashboard/mrr-trend-chart";
 import { NRRLedger } from "@/components/dashboard/nrr-ledger";
-import { TierMixChart, type TierDatum } from "@/components/dashboard/tier-mix-chart";
+import { PlanMixChart, type PlanMixDatum } from "@/components/dashboard/plan-mix-chart";
 
 /**
  * The overview's data-owning sections.
@@ -45,6 +43,8 @@ import { TierMixChart, type TierDatum } from "@/components/dashboard/tier-mix-ch
  * section its own `<Suspense>` boundary and stream them independently instead of
  * blocking the whole route on the slowest statement. The promises are started by
  * the page, in parallel, before any of these are reached.
+ *
+ * Every amount is in the workspace's single currency (`summary.currency`).
  */
 
 /** Eyebrow used on every panel — small mono caps, the label voice of the page. */
@@ -68,14 +68,14 @@ export async function HeadlinePanel({
   comparison,
 }: HeadlinePanelProps) {
   const [summary, trend] = await Promise.all([summaryPromise, trendPromise]);
-  const { currency, isMixedCurrency, mrrCents } = summary;
+  const { currency, mrrCents } = summary;
 
   const points: MRRTrendDatum[] = trend.map((point) => ({
     month: point.month,
     tick: formatMonthShort(point.month),
     heading: formatMonthLong(point.month),
     mrrCents: point.mrrCents,
-    activeSubs: point.activeSubs,
+    activeCustomers: point.activeCustomers,
   }));
 
   const hasHistory = points.length > 0;
@@ -124,17 +124,6 @@ export async function HeadlinePanel({
             </span>
             <span className="font-mono">{currency}</span>
           </p>
-
-          {isMixedCurrency ? (
-            <p className="mt-3 flex items-start gap-2 rounded-md bg-muted/60 px-2.5 py-2 text-xs text-muted-foreground text-balance">
-              <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-brand" aria-hidden />
-              <span>
-                Subscriptions bill in more than one currency and no exchange rates
-                are stored, so this figure adds unlike amounts. Read it as an
-                approximation until rates are configured.
-              </span>
-            </p>
-          ) : null}
         </CardContent>
       )}
 
@@ -196,9 +185,9 @@ interface KpiStripProps {
 
 export async function KpiStrip({ summaryPromise, comparison }: KpiStripProps) {
   const summary = await summaryPromise;
-  const { arrCents, activeSubscriptions, churnRate, currency } = summary;
+  const { arrCents, activeCustomers, customerChurnRate, revenueChurnRate, currency } = summary;
 
-  const subscriberDelta = activeSubscriptions.current - activeSubscriptions.previous;
+  const customerDelta = activeCustomers.current - activeCustomers.previous;
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -212,38 +201,34 @@ export async function KpiStrip({ summaryPromise, comparison }: KpiStripProps) {
       </MetricTile>
 
       <MetricTile
-        label="Active subscriptions"
+        label="Active customers"
         icon={Users}
         delta={
-          <DeltaBadge
-            value={activeSubscriptions.changePct}
-            unit="percent"
-            goodDirection="up"
-          />
+          <DeltaBadge value={activeCustomers.changePct} unit="percent" goodDirection="up" />
         }
-        footnote={`${formatSignedCount(subscriberDelta)} vs ${comparison}`}
+        footnote={`${formatSignedCount(customerDelta)} vs ${comparison}`}
       >
-        <CountUp value={activeSubscriptions.current} format="count" />
+        <CountUp value={activeCustomers.current} format="count" />
       </MetricTile>
 
       <MetricTile
-        label="Churn rate"
+        label="Customer churn"
         icon={UserMinus}
         delta={
           // Points, not percent: a percent change of a percentage reads a one
           // point move as a catastrophe. Up is bad here, so the colour flips.
-          <DeltaBadge value={churnRate.changePoints} unit="points" goodDirection="down" />
+          <DeltaBadge value={customerChurnRate.changePoints} unit="points" goodDirection="down" />
         }
         footnote={
-          churnRate.current === null
-            ? "No subscriptions were live at period start"
-            : `Cancelled in the last ${comparison.replace("previous ", "")}`
+          customerChurnRate.current === null
+            ? "No customer was active at period start"
+            : `Revenue churn ${formatPercent(revenueChurnRate.current, 1)} · last ${comparison.replace("previous ", "")}`
         }
       >
-        {churnRate.current === null ? (
+        {customerChurnRate.current === null ? (
           <span className="text-muted-foreground">{EM_DASH}</span>
         ) : (
-          <CountUp value={churnRate.current} format="percent" digits={1} />
+          <CountUp value={customerChurnRate.current} format="percent" digits={1} />
         )}
       </MetricTile>
     </div>
@@ -251,62 +236,62 @@ export async function KpiStrip({ summaryPromise, comparison }: KpiStripProps) {
 }
 
 // ---------------------------------------------------------------------------
-// User activity
+// Customers
 // ---------------------------------------------------------------------------
 
-interface UserActivityStripProps {
-  activityPromise: Promise<UserActivitySummary>;
+interface CustomerActivityStripProps {
+  activityPromise: Promise<CustomerActivitySummary>;
   /** "previous 30 days" etc. — the same phrase the KPI strip uses. */
   comparison: string;
 }
 
 /**
- * Active and new users, from MetricSnapshot, with the same period comparison as
- * the KPI strip above it.
- *
- * The footnotes say "seats" on purpose: the snapshot's user figures are an
- * estimate from plan seat counts, not logins, and the tile must not pass one off
- * as the other. The as-of date is named because snapshots only exist up to the
- * last day the daily job ran, and a stale count otherwise looks current.
+ * Active, new and churned customers, from the daily snapshots, with the same
+ * period comparison as the KPI strip above it. The as-of date is named because
+ * snapshots only exist up to the last day the daily job ran, and a stale count
+ * otherwise looks current.
  */
-export async function UserActivityStrip({ activityPromise, comparison }: UserActivityStripProps) {
-  const { activeUsers, newUsers, asOfDate } = await activityPromise;
+export async function CustomerActivityStrip({
+  activityPromise,
+  comparison,
+}: CustomerActivityStripProps) {
+  const { activeCustomers, newCustomers, churnedCustomers, asOfDate } = await activityPromise;
   const span = comparison.replace("previous ", "");
-
-  const seatDelta =
-    activeUsers.current === null || activeUsers.previous === null
-      ? null
-      : activeUsers.current - activeUsers.previous;
   const asOf = asOfDate === null ? null : formatDay(new Date(`${asOfDate}T00:00:00Z`));
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
+    <div className="grid gap-3 sm:grid-cols-3">
       <MetricTile
-        label="Active users"
+        label="Customers"
         icon={UserCheck}
-        delta={<DeltaBadge value={activeUsers.changePct} unit="percent" goodDirection="up" />}
-        footnote={
-          asOf === null
-            ? "No user snapshot recorded yet"
-            : seatDelta === null
-              ? `Estimated seats on live plans, as of ${asOf}`
-              : `${formatSignedCount(seatDelta)} vs ${comparison} · seats as of ${asOf}`
-        }
+        delta={<DeltaBadge value={activeCustomers.changePct} unit="percent" goodDirection="up" />}
+        footnote={asOf === null ? "No snapshot recorded yet" : `Paying customers as of ${asOf}`}
       >
-        {activeUsers.current === null ? (
+        {activeCustomers.current === null ? (
           <span className="text-muted-foreground">{EM_DASH}</span>
         ) : (
-          <CountUp value={activeUsers.current} format="count" />
+          <CountUp value={activeCustomers.current} format="count" />
         )}
       </MetricTile>
 
       <MetricTile
-        label="New users"
+        label="New customers"
         icon={UserPlus}
-        delta={<DeltaBadge value={newUsers.changePct} unit="percent" goodDirection="up" />}
-        footnote={`Net seats added in the last ${span}`}
+        delta={<DeltaBadge value={newCustomers.changePct} unit="percent" goodDirection="up" />}
+        footnote={`First-time customers in the last ${span}`}
       >
-        <CountUp value={newUsers.current} format="count" />
+        <CountUp value={newCustomers.current} format="count" />
+      </MetricTile>
+
+      <MetricTile
+        label="Churned customers"
+        icon={UserMinus}
+        delta={
+          <DeltaBadge value={churnedCustomers.changePct} unit="percent" goodDirection="down" />
+        }
+        footnote={`Stopped paying in the last ${span}`}
+      >
+        <CountUp value={churnedCustomers.current} format="count" />
       </MetricTile>
     </div>
   );
@@ -316,76 +301,59 @@ export async function UserActivityStrip({ activityPromise, comparison }: UserAct
 // Plan mix
 // ---------------------------------------------------------------------------
 
-/**
- * Tier rank, top to bottom. Fixed order and fixed colour binding: the ramp step
- * follows the TIER, never its count, so filtering or a change in mix can never
- * repaint a surviving row.
- */
-const TIER_ORDER: readonly PlanTier[] = ["ENTERPRISE", "PRO", "STARTER", "FREE"];
-
-const TIER_FILL: Record<PlanTier, string> = {
-  ENTERPRISE: "var(--tier-4)",
-  PRO: "var(--tier-3)",
-  STARTER: "var(--tier-2)",
-  FREE: "var(--tier-1)",
-};
-
 interface PlanMixPanelProps {
-  subscriptionsPromise: Promise<ActiveSubscriptionsResult>;
+  planMixPromise: Promise<PlanMixResult>;
+  currency: string;
 }
 
-export async function PlanMixPanel({ subscriptionsPromise }: PlanMixPanelProps) {
-  const result = await subscriptionsPromise;
-  const counts = new Map(result.byTier.map((entry) => [entry.tier, entry.count]));
+export async function PlanMixPanel({ planMixPromise, currency }: PlanMixPanelProps) {
+  const result = await planMixPromise;
 
-  // Every tier is rendered, including the ones at zero — "no enterprise
-  // customers" is information, and dropping the row would hide it.
-  const data: TierDatum[] = TIER_ORDER.map((tier) => {
-    const count = counts.get(tier) ?? 0;
-    return {
-      tier,
-      label: formatEnumLabel(tier),
-      count,
-      share: result.total === 0 ? 0 : count / result.total,
-      fill: TIER_FILL[tier],
-    };
-  });
-
-  const pastDue = result.byStatus.find((entry) => entry.status === "PAST_DUE")?.count ?? 0;
+  const data: PlanMixDatum[] = result.byPlan.map((entry) => ({
+    key: entry.planId ?? "custom",
+    label: entry.name,
+    mrrCents: entry.mrrCents,
+    valueLabel: formatMoney(entry.mrrCents, currency),
+    share: result.totalMRRCents === 0 ? 0 : entry.mrrCents / result.totalMRRCents,
+    subscriptions: `${formatCount(entry.subscriptions)} ${
+      entry.subscriptions === 1 ? "subscription" : "subscriptions"
+    }`,
+    isCustom: entry.planId === null,
+  }));
 
   return (
     <Card className="h-full">
       <CardHeader>
-        <h2 className={EYEBROW}>Subscriptions by plan</h2>
+        <h2 className={EYEBROW}>MRR by plan</h2>
         <CardAction>
           <span className="font-mono text-xs text-muted-foreground tabular-nums">
-            {formatCount(result.total)} live
+            {formatCount(result.totalSubscriptions)} live
           </span>
         </CardAction>
       </CardHeader>
 
-      {result.total === 0 ? (
+      {result.totalSubscriptions === 0 ? (
         <CardContent>
           <EmptyState
             icon={Layers}
             title="No live subscriptions"
-            description="The plan mix fills in as customers subscribe. Free trials count from the day they start."
+            description="The plan mix fills in as customers subscribe."
             className="border-0 bg-transparent py-8"
           />
         </CardContent>
       ) : (
         <>
           <CardContent>
-            <TierMixChart data={data} />
+            <PlanMixChart data={data} />
           </CardContent>
           <CardContent className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border pt-3">
             <p className="text-[0.6875rem] text-muted-foreground">
-              Live subscriptions today, ordered by plan
+              Live MRR today by plan, in {currency}. Custom = no plan, negotiated price.
             </p>
-            {pastDue > 0 ? (
+            {result.pastDueSubscriptions > 0 ? (
               <p className="flex items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
                 <span aria-hidden className="size-1.5 rounded-full bg-negative" />
-                {formatCount(pastDue)} past due
+                {formatCount(result.pastDueSubscriptions)} past due
               </p>
             ) : null}
           </CardContent>
@@ -401,9 +369,10 @@ export async function PlanMixPanel({ subscriptionsPromise }: PlanMixPanelProps) 
 
 interface InvoicesPanelProps {
   invoicesPromise: Promise<RecentInvoice[]>;
+  currency: string;
 }
 
-export async function InvoicesPanel({ invoicesPromise }: InvoicesPanelProps) {
+export async function InvoicesPanel({ invoicesPromise, currency }: InvoicesPanelProps) {
   const invoices = await invoicesPromise;
 
   return (
@@ -416,7 +385,7 @@ export async function InvoicesPanel({ invoicesPromise }: InvoicesPanelProps) {
           </span>
         ) : null}
       </div>
-      <InvoiceTable invoices={invoices} />
+      <InvoiceTable invoices={invoices} currency={currency} />
     </Card>
   );
 }

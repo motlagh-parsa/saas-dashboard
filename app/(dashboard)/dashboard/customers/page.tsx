@@ -1,37 +1,35 @@
 // Customers. Render mode: dynamic — it reads the session cookie, so it is never
 // statically rendered.
 //
-// What a "customer" is here: ONE WORKSPACE the caller belongs to. There is no
-// Customer table, and the seed gives every organization exactly one subscription
-// lifecycle of its own, so each org you can see reads as one customer with a plan
-// history. This is the one page that looks ACROSS workspaces rather than at the
-// resolved one — scoped by the caller's memberships, never by an id from the
-// client, so it can only ever list orgs the caller could already switch into.
+// A customer is one of the ACTIVE WORKSPACE's paying customers — a `Customer`
+// row — not a workspace. Where each one stands (active / churned / not paying
+// yet), their MRR and their dates are derived from their subscriptions in
+// lib/metrics.ts (`getCustomerList`), by the same definitions every other page
+// uses.
 //
 // Data flow, in order:
 //   1. `requireSession()` is the authorization gate. Middleware blocks anonymous
 //      requests, but middleware alone is NOT authz, so it is re-checked here.
-//   2. One query, started at once and handed to both sections as a promise. Each
+//   2. The organization is resolved SERVER-SIDE by lib/active-org.ts: the
+//      workspace picked in the switcher, honoured only while the caller is a
+//      member of it, else their most privileged one.
+//   3. One query, started at once and handed to both sections as a promise. Each
 //      section streams into its own `<Suspense>` and error boundary, so the shell
 //      paints first and a failure stays in the section that shows it.
-//   3. Customer state is decided by DATES, not `status` — the same rule as
-//      lib/metrics.ts. The seed stamps `CANCELED` on every ended segment,
-//      upgrades included; only `canceledAt` marks a real cancellation.
 import { Suspense } from "react";
 import type { Metadata } from "next";
-import type { BillingInterval, PlanTier, SubscriptionStatus } from "@prisma/client";
+import Link from "next/link";
+import { Building2 } from "lucide-react";
 
+import { getActiveOrgId } from "@/lib/active-org";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getCustomerList } from "@/lib/metrics";
 import { formatDay } from "@/lib/format";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/dashboard/empty-state";
 import { SectionBoundary } from "@/components/dashboard/section-boundary";
-import {
-  CustomerLedger,
-  CustomerTiles,
-  type CustomerRow,
-  type CustomerState,
-  type CustomersView,
-} from "@/components/dashboard/customer-sections";
+import { CustomerLedger, CustomerTiles } from "@/components/dashboard/customer-sections";
 import {
   CustomerLedgerSkeleton,
   CustomerTilesSkeleton,
@@ -39,30 +37,8 @@ import {
 
 export const metadata: Metadata = {
   title: "Customers",
-  description: "Plan, status, and MRR for every workspace you belong to.",
+  description: "Every customer of your workspace: plan, status, and MRR.",
 };
-
-/** Matches the `Subscription.currency` schema default. */
-const DEFAULT_CURRENCY = "USD";
-
-/** The subscription columns this page reads — one lifecycle segment. */
-interface Segment {
-  tier: PlanTier;
-  status: SubscriptionStatus;
-  amountCents: number;
-  currency: string;
-  interval: BillingInterval;
-  startedAt: Date;
-  endedAt: Date | null;
-  canceledAt: Date | null;
-}
-
-interface OrganizationWithSegments {
-  id: string;
-  name: string;
-  /** Oldest first. */
-  subscriptions: Segment[];
-}
 
 /**
  * Starts a query immediately and marks it handled.
@@ -77,116 +53,41 @@ function eager<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
 
-/** Same live-as-of predicate as lib/metrics.ts: inactive ON the `endedAt` instant. */
-function isLive(segment: Segment, asOf: Date): boolean {
-  return segment.startedAt <= asOf && (segment.endedAt === null || segment.endedAt > asOf);
-}
-
-/**
- * MONTHLY contributes its full amount; YEARLY is spread evenly over 12 months.
- * `Math.round` agrees with the Postgres `ROUND()` in lib/metrics.ts because
- * `amountCents >= 0` is enforced by a CHECK constraint (see prisma/schema.prisma).
- */
-function monthlyCents(segment: Segment): number {
-  return segment.interval === "YEARLY" ? Math.round(segment.amountCents / 12) : segment.amountCents;
-}
-
-function toCustomerRow(org: OrganizationWithSegments, asOf: Date): CustomerRow {
-  // A segment that has not started yet says nothing about today.
-  const started = org.subscriptions.filter((segment) => segment.startedAt <= asOf);
-  const live = started.filter((segment) => isLive(segment, asOf));
-  const last = started.length > 0 ? started[started.length - 1] : null;
-  const current = live.length > 0 ? live[live.length - 1] : last;
-
-  let state: CustomerState = "inactive";
-  if (live.length > 0) state = "active";
-  else if (last !== null && last.canceledAt !== null) state = "churned";
-
-  return {
-    organizationId: org.id,
-    name: org.name,
-    tier: current?.tier ?? null,
-    interval: current?.interval ?? null,
-    state,
-    liveStatus: live.length > 0 ? live[live.length - 1].status : null,
-    mrrCents: live.reduce((sum, segment) => sum + monthlyCents(segment), 0),
-    currency: current?.currency ?? DEFAULT_CURRENCY,
-    customerSince: started.length > 0 ? started[0].startedAt : null,
-    canceledAt: state === "churned" && last !== null ? last.canceledAt : null,
-  };
-}
-
-/**
- * Every workspace the caller belongs to, with its whole segment history.
- *
- * Pulling the segments into JS is deliberate here, unlike lib/metrics.ts: an org's
- * OWN plan history is a handful of rows (three at most in the seed), and deciding
- * "live / churned / since when" per customer reads far more plainly as a walk
- * over them than as a window-function query.
- */
-async function loadCustomers(userId: string, asOf: Date): Promise<CustomersView> {
-  const memberships = await prisma.membership.findMany({
-    where: { userId },
-    select: {
-      organization: {
-        select: {
-          id: true,
-          name: true,
-          subscriptions: {
-            orderBy: { startedAt: "asc" },
-            select: {
-              tier: true,
-              status: true,
-              amountCents: true,
-              currency: true,
-              interval: true,
-              startedAt: true,
-              endedAt: true,
-              canceledAt: true,
-            },
-          },
-        },
-      },
-    },
-  });
-
-  const customers = memberships
-    .map((membership) => toCustomerRow(membership.organization, asOf))
-    .sort((a, b) => b.mrrCents - a.mrrCents || a.name.localeCompare(b.name));
-
-  const active = customers.filter((customer) => customer.state === "active");
-  const activeMrrCents = active.reduce((sum, customer) => sum + customer.mrrCents, 0);
-
-  // Most common currency among active customers labels the average; more than one
-  // means the average adds unlike amounts, and the tiles say so.
-  const currencyCounts = new Map<string, number>();
-  for (const customer of active) {
-    currencyCounts.set(customer.currency, (currencyCounts.get(customer.currency) ?? 0) + 1);
-  }
-  let currency = DEFAULT_CURRENCY;
-  let topCount = 0;
-  for (const [code, count] of currencyCounts) {
-    if (count > topCount) {
-      currency = code;
-      topCount = count;
-    }
-  }
-
-  return {
-    customers,
-    activeCount: active.length,
-    churnedCount: customers.filter((customer) => customer.state === "churned").length,
-    averageMrrCents: active.length === 0 ? 0 : Math.round(activeMrrCents / active.length),
-    currency,
-    isMixedCurrency: currencyCounts.size > 1,
-  };
-}
-
 export default async function CustomersPage() {
   const session = await requireSession();
   const asOf = new Date();
 
-  const customersPromise = eager(loadCustomers(session.user.id, asOf));
+  // Tenant resolution: the workspace picked in the switcher (verified against the
+  // caller's memberships), else their most privileged one — lib/active-org.ts.
+  const organizationId = await getActiveOrgId(session.user.id);
+
+  if (organizationId === null) {
+    return (
+      <main className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <EmptyState
+          icon={Building2}
+          title="You are not in a workspace yet"
+          description="Customers belong to a workspace. Ask an owner to add you to theirs, or create one to start tracking revenue."
+          action={
+            <Button
+              asChild
+              className="h-11 bg-brand px-4 text-brand-foreground hover:bg-brand/90 sm:h-9"
+            >
+              <Link href="/dashboard/settings">Open workspace settings</Link>
+            </Button>
+          }
+          className="rise mt-2"
+        />
+      </main>
+    );
+  }
+
+  // The header names the workspace; the list is started before it is awaited.
+  const customersPromise = eager(getCustomerList(organizationId, asOf));
+  const organization = await prisma.organization.findUniqueOrThrow({
+    where: { id: organizationId },
+    select: { name: true },
+  });
 
   return (
     <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -194,7 +95,7 @@ export default async function CustomersPage() {
         <div>
           <h1 className="font-heading text-xl font-semibold tracking-tight">Customers</h1>
           <p className="mt-1 text-[0.8125rem] text-muted-foreground">
-            Every workspace you belong to
+            {organization.name}
             <span aria-hidden className="px-1.5 text-muted-foreground/40">
               ·
             </span>

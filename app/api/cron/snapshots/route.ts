@@ -19,8 +19,10 @@
 //     new/churned subs across each month, so a missing day silently undercounts.
 //   - Upserts on `@@unique([organizationId, date])`, all in one transaction, so a
 //     retry after a failure rewrites the same rows rather than duplicating them.
-//   - Values come from `lib/snapshot-formula.ts`, the same function the seed uses,
-//     so cron rows and seeded rows sit on one consistent series.
+//   - Values come from `lib/snapshot-formula.ts`, the same function the sample
+//     data generator uses, so cron rows and generated rows sit on one series.
+//     It reads each workspace's full subscription history on every run — fine at
+//     today's scale, and the first thing to revisit when it is not.
 import "server-only";
 
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -31,6 +33,7 @@ import { prisma } from "@/lib/prisma";
 import {
   DAY_MS,
   computeDaySnapshot,
+  firstActiveAt,
   utcDayStart,
   type SnapshotSegment,
 } from "@/lib/snapshot-formula";
@@ -88,24 +91,24 @@ export async function GET(request: Request): Promise<NextResponse> {
     days.push(new Date(ms));
   }
 
-  // Every segment the formula can look at for these days: live at any of them
-  // or the day before the first, or starting/ending within them.
-  const dayBeforeFirst = new Date(firstDay.getTime() - DAY_MS);
+  // Each workspace's FULL subscription history: "new customer" means never
+  // active before, which only the whole history can answer. Segments that start
+  // after the last day written cannot affect it, so they are left out.
   const [organizations, segments] = await Promise.all([
-    prisma.organization.findMany({ select: { id: true, slug: true } }),
+    prisma.organization.findMany({ select: { id: true } }),
     prisma.subscription.findMany({
-      where: {
-        startedAt: { lt: today },
-        OR: [{ endedAt: null }, { endedAt: { gte: dayBeforeFirst } }],
-      },
+      where: { startedAt: { lt: today } },
       select: {
         id: true,
         organizationId: true,
-        tier: true,
-        interval: true,
+        customerId: true,
         amountCents: true,
+        quantity: true,
+        interval: true,
+        intervalCount: true,
         startedAt: true,
         endedAt: true,
+        canceledAt: true,
       },
     }),
   ]);
@@ -120,8 +123,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   await prisma.$transaction(
     organizations.flatMap((org) => {
       const orgSegments = segmentsByOrg.get(org.id) ?? [];
+      const firstActive = firstActiveAt(orgSegments);
       return days.map((day) => {
-        const metrics = computeDaySnapshot(org.slug, orgSegments, day);
+        const metrics = computeDaySnapshot(orgSegments, day, firstActive);
         return prisma.metricSnapshot.upsert({
           where: { organizationId_date: { organizationId: org.id, date: day } },
           create: { organizationId: org.id, date: day, ...metrics },

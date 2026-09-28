@@ -1,6 +1,7 @@
 "use client";
 
-// "Add subscription" — records a new Subscription for the workspace on screen.
+// "Add subscription" — records a new Subscription for one of the workspace's
+// customers, optionally creating the customer in the same step.
 //
 // Two components on purpose. The dialog owns only `open`; the form inside is
 // remounted (fresh `key`) every time the dialog opens, so a new attempt never
@@ -16,18 +17,24 @@ import type { ChangeEvent, FormEvent } from "react";
 import { Loader2, Plus, TriangleAlert } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { formatEnumLabel, formatMoney } from "@/lib/format";
-import { PLAN_PRICE_CENTS } from "@/lib/plan-pricing";
+import { formatEnumLabel, formatIntervalSuffix, formatMoney } from "@/lib/format";
 import { addSubscription } from "@/lib/subscription-actions";
 import {
-  BILLING_INTERVALS,
+  BILLING_OPTIONS,
+  CUSTOMER_NAME_MAX,
+  CUSTOM_PRICE,
   IDLE_SUBSCRIPTION_FORM,
-  PLAN_TIERS,
+  NEW_CUSTOMER,
   START_STATUSES,
+  billingOption,
   centsToPriceInput,
+  priceToCents,
   subscriptionFieldErrors,
   subscriptionSchema,
   todayUtc,
+  type BillingKey,
+  type CustomerOption,
+  type PlanOption,
   type SubscriptionField,
   type SubscriptionFieldErrors,
   type SubscriptionFormState,
@@ -47,19 +54,26 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "@/components/dashboard/use-toast";
 
-type Tier = (typeof PLAN_TIERS)[number];
-type Interval = (typeof BILLING_INTERVALS)[number];
-
 interface SubscriptionDraft {
-  tier: Tier;
-  interval: Interval;
-  status: (typeof START_STATUSES)[number];
+  customerId: string;
+  newCustomerName: string;
+  planId: string;
   price: string;
+  billing: BillingKey;
+  status: (typeof START_STATUSES)[number];
   startDate: string;
 }
 
 /** Order in which fields appear, so the first invalid one can take focus. */
-const FIELD_ORDER: readonly SubscriptionField[] = ["tier", "interval", "price", "status", "startDate"];
+const FIELD_ORDER: readonly SubscriptionField[] = [
+  "customerId",
+  "newCustomerName",
+  "planId",
+  "billing",
+  "price",
+  "status",
+  "startDate",
+];
 
 /** Same native-select styling as the Schedule dialog (see its note on why native). */
 const SELECT_CLASS =
@@ -67,28 +81,23 @@ const SELECT_CLASS =
 
 const ERROR_CLASS = "text-xs text-destructive";
 
-const INTERVAL_SUFFIX: Record<Interval, string> = { MONTHLY: "mo", YEARLY: "yr" };
-
-function listPrice(tier: Tier, interval: Interval): string {
-  return centsToPriceInput(PLAN_PRICE_CENTS[interval][tier]);
-}
-
-function initialDraft(): SubscriptionDraft {
-  return {
-    tier: "STARTER",
-    interval: "MONTHLY",
-    status: "ACTIVE",
-    price: listPrice("STARTER", "MONTHLY"),
-    startDate: todayUtc(),
-  };
-}
-
 interface AddSubscriptionDialogProps {
   /** The workspace this page shows — the action re-checks the caller's role in it. */
   organizationId: string;
+  /** The workspace's reporting currency: every price here is in it. */
+  currency: string;
+  /** The workspace's active customers, by name. */
+  customers: readonly CustomerOption[];
+  /** The workspace's active plans. */
+  plans: readonly PlanOption[];
 }
 
-export function AddSubscriptionDialog({ organizationId }: AddSubscriptionDialogProps) {
+export function AddSubscriptionDialog({
+  organizationId,
+  currency,
+  customers,
+  plans,
+}: AddSubscriptionDialogProps) {
   const [open, setOpen] = useState<boolean>(false);
   // Bumped on every open, so the form below mounts fresh each time.
   const [attempt, setAttempt] = useState<number>(0);
@@ -111,14 +120,17 @@ export function AddSubscriptionDialog({ organizationId }: AddSubscriptionDialogP
         <DialogHeader>
           <DialogTitle>Add a subscription</DialogTitle>
           <DialogDescription>
-            Starts a new subscription in this workspace. It counts toward MRR from its
-            start date.
+            Starts a subscription for one of your customers. It counts toward MRR from
+            its start date.
           </DialogDescription>
         </DialogHeader>
 
         <SubscriptionForm
           key={attempt}
           organizationId={organizationId}
+          currency={currency}
+          customers={customers}
+          plans={plans}
           onAdded={() => setOpen(false)}
         />
       </DialogContent>
@@ -126,14 +138,35 @@ export function AddSubscriptionDialog({ organizationId }: AddSubscriptionDialogP
   );
 }
 
-interface SubscriptionFormProps {
-  organizationId: string;
+interface SubscriptionFormProps extends AddSubscriptionDialogProps {
   onAdded: () => void;
 }
 
-function SubscriptionForm({ organizationId, onAdded }: SubscriptionFormProps) {
-  const [draft, setDraft] = useState<SubscriptionDraft>(initialDraft);
+function SubscriptionForm({
+  organizationId,
+  currency,
+  customers,
+  plans,
+  onAdded,
+}: SubscriptionFormProps) {
+  const firstPlan = plans[0];
+  const [draft, setDraft] = useState<SubscriptionDraft>(() => ({
+    // A workspace with no customers yet starts on "new customer".
+    customerId: customers[0]?.id ?? NEW_CUSTOMER,
+    newCustomerName: "",
+    planId: firstPlan?.id ?? CUSTOM_PRICE,
+    price: firstPlan ? centsToPriceInput(firstPlan.amountCents) : "",
+    billing: "MONTH_1",
+    status: "ACTIVE",
+    startDate: todayUtc(),
+  }));
   const [clientErrors, setClientErrors] = useState<SubscriptionFieldErrors>({});
+
+  const plan = plans.find((candidate) => candidate.id === draft.planId) ?? null;
+  const isCustom = draft.planId === CUSTOM_PRICE;
+  const isNewCustomer = draft.customerId === NEW_CUSTOMER;
+  const terms = plan ?? billingOption(draft.billing);
+  const suffix = formatIntervalSuffix(terms.interval, terms.intervalCount);
 
   // Closing and confirming happen in the action's own completion path — after
   // the server has said yes — rather than in an effect watching the state.
@@ -141,11 +174,12 @@ function SubscriptionForm({ organizationId, onAdded }: SubscriptionFormProps) {
     async (previous: SubscriptionFormState, formData: FormData): Promise<SubscriptionFormState> => {
       const result = await addSubscription(previous, formData);
       if (result.status === "success") {
+        const customerName = isNewCustomer
+          ? draft.newCustomerName.trim()
+          : (customers.find((customer) => customer.id === draft.customerId)?.name ?? "Customer");
+        const cents = draft.price === "" && plan ? plan.amountCents : priceToCents(draft.price);
         toast.success("Subscription added", {
-          description: `${formatEnumLabel(draft.tier)} · ${formatMoney(
-            Math.round(Number(draft.price) * 100),
-            "USD",
-          )}/${INTERVAL_SUFFIX[draft.interval]}`,
+          description: `${customerName} · ${plan?.name ?? "Custom"} · ${formatMoney(cents, currency)}/${suffix}`,
         });
         onAdded();
       }
@@ -159,25 +193,28 @@ function SubscriptionForm({ organizationId, onAdded }: SubscriptionFormProps) {
   const errorId = (field: SubscriptionField): string => `${baseId}-${field}-error`;
 
   const errors: SubscriptionFieldErrors = { ...clientErrors, ...state.fieldErrors };
-  const isFree = draft.tier === "FREE";
 
   function clearError(field: SubscriptionField): void {
     if (clientErrors[field]) setClientErrors((previous) => ({ ...previous, [field]: undefined }));
   }
 
-  // Changing the plan or the interval re-quotes the list price; the price stays
-  // editable afterwards (a discount is a real thing), except on Free.
-  function handlePlanChange(field: "tier" | "interval") {
-    return (event: ChangeEvent<HTMLSelectElement>): void => {
-      const value = event.target.value;
-      setDraft((previous) => {
-        const tier = field === "tier" ? (value as Tier) : previous.tier;
-        const interval = field === "interval" ? (value as Interval) : previous.interval;
-        return { ...previous, tier, interval, price: listPrice(tier, interval) };
-      });
-      clearError(field);
-      clearError("price");
-    };
+  function set<K extends keyof SubscriptionDraft>(field: K, value: SubscriptionDraft[K]): void {
+    setDraft((previous) => ({ ...previous, [field]: value }));
+    clearError(field);
+  }
+
+  // Choosing a plan re-quotes its price; the price stays editable afterwards
+  // (a discount is a real thing). "Custom price" clears it to be typed.
+  function handlePlanChange(event: ChangeEvent<HTMLSelectElement>): void {
+    const planId = event.target.value;
+    const next = plans.find((candidate) => candidate.id === planId);
+    setDraft((previous) => ({
+      ...previous,
+      planId,
+      price: next ? centsToPriceInput(next.amountCents) : "",
+    }));
+    clearError("planId");
+    clearError("price");
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
@@ -227,51 +264,95 @@ function SubscriptionForm({ organizationId, onAdded }: SubscriptionFormProps) {
         </p>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-2">
+        <Label htmlFor={fieldId("customerId")}>Customer</Label>
+        <select
+          id={fieldId("customerId")}
+          name="customerId"
+          value={draft.customerId}
+          onChange={(event) => set("customerId", event.target.value)}
+          aria-invalid={errors.customerId ? true : undefined}
+          aria-describedby={describedBy("customerId")}
+          className={SELECT_CLASS}
+        >
+          <option value={NEW_CUSTOMER}>New customer…</option>
+          {customers.map((customer) => (
+            <option key={customer.id} value={customer.id}>
+              {customer.name}
+            </option>
+          ))}
+        </select>
+        {fieldError("customerId")}
+      </div>
+
+      {isNewCustomer ? (
         <div className="grid gap-2">
-          <Label htmlFor={fieldId("tier")}>Plan</Label>
+          <Label htmlFor={fieldId("newCustomerName")}>New customer&apos;s name</Label>
+          <Input
+            id={fieldId("newCustomerName")}
+            name="newCustomerName"
+            type="text"
+            autoComplete="organization"
+            maxLength={CUSTOMER_NAME_MAX}
+            value={draft.newCustomerName}
+            onChange={(event) => set("newCustomerName", event.target.value)}
+            aria-invalid={errors.newCustomerName ? true : undefined}
+            aria-describedby={describedBy("newCustomerName")}
+            className="h-11 sm:h-8"
+          />
+          {fieldError("newCustomerName")}
+        </div>
+      ) : null}
+
+      <div className={cn("grid gap-4", isCustom && "sm:grid-cols-2")}>
+        <div className="grid gap-2">
+          <Label htmlFor={fieldId("planId")}>Plan</Label>
           <select
-            id={fieldId("tier")}
-            name="tier"
-            value={draft.tier}
-            onChange={handlePlanChange("tier")}
-            aria-invalid={errors.tier ? true : undefined}
-            aria-describedby={describedBy("tier")}
+            id={fieldId("planId")}
+            name="planId"
+            value={draft.planId}
+            onChange={handlePlanChange}
+            aria-invalid={errors.planId ? true : undefined}
+            aria-describedby={describedBy("planId")}
             className={SELECT_CLASS}
           >
-            {PLAN_TIERS.map((tier) => (
-              <option key={tier} value={tier}>
-                {formatEnumLabel(tier)}
+            {plans.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.name} — {formatMoney(option.amountCents, currency)}/
+                {formatIntervalSuffix(option.interval, option.intervalCount)}
               </option>
             ))}
+            <option value={CUSTOM_PRICE}>Custom price</option>
           </select>
-          {fieldError("tier")}
+          {fieldError("planId")}
         </div>
 
-        <div className="grid gap-2">
-          <Label htmlFor={fieldId("interval")}>Billing</Label>
-          <select
-            id={fieldId("interval")}
-            name="interval"
-            value={draft.interval}
-            onChange={handlePlanChange("interval")}
-            aria-invalid={errors.interval ? true : undefined}
-            aria-describedby={describedBy("interval")}
-            className={SELECT_CLASS}
-          >
-            {BILLING_INTERVALS.map((interval) => (
-              <option key={interval} value={interval}>
-                {formatEnumLabel(interval)}
-              </option>
-            ))}
-          </select>
-          {fieldError("interval")}
-        </div>
+        {isCustom ? (
+          <div className="grid gap-2">
+            <Label htmlFor={fieldId("billing")}>Billing</Label>
+            <select
+              id={fieldId("billing")}
+              name="billing"
+              value={draft.billing}
+              onChange={(event) => set("billing", event.target.value as BillingKey)}
+              aria-invalid={errors.billing ? true : undefined}
+              aria-describedby={describedBy("billing")}
+              className={SELECT_CLASS}
+            >
+              {BILLING_OPTIONS.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            {fieldError("billing")}
+          </div>
+        ) : null}
       </div>
 
       <div className="grid gap-2">
         <Label htmlFor={fieldId("price")}>
-          Price (USD per {draft.interval === "YEARLY" ? "year" : "month"})
+          Price ({currency}/{suffix})
         </Label>
         <Input
           id={fieldId("price")}
@@ -280,20 +361,15 @@ function SubscriptionForm({ organizationId, onAdded }: SubscriptionFormProps) {
           inputMode="decimal"
           autoComplete="off"
           value={draft.price}
-          readOnly={isFree}
-          onChange={(event) => {
-            const { value } = event.target;
-            setDraft((previous) => ({ ...previous, price: value }));
-            clearError("price");
-          }}
+          onChange={(event) => set("price", event.target.value)}
           aria-invalid={errors.price ? true : undefined}
           aria-describedby={cn(`${baseId}-price-hint`, errors.price && errorId("price"))}
-          className={cn("h-11 font-mono tabular-nums sm:h-8", isFree && "text-muted-foreground")}
+          className="h-11 font-mono tabular-nums sm:h-8"
         />
         <p id={`${baseId}-price-hint`} className="text-xs text-muted-foreground">
-          {isFree
-            ? "The Free plan never bills."
-            : `List price ${formatMoney(PLAN_PRICE_CENTS[draft.interval][draft.tier], "USD")}/${INTERVAL_SUFFIX[draft.interval]}. Yearly plans count as one twelfth toward MRR.`}
+          {plan
+            ? `List price ${formatMoney(plan.amountCents, currency)}/${suffix}. Change it for a discounted deal.`
+            : "A negotiated price with no plan. It is reported as Custom in the plan mix."}
         </p>
         {fieldError("price")}
       </div>
@@ -305,11 +381,7 @@ function SubscriptionForm({ organizationId, onAdded }: SubscriptionFormProps) {
             id={fieldId("status")}
             name="status"
             value={draft.status}
-            onChange={(event) => {
-              const value = event.target.value as SubscriptionDraft["status"];
-              setDraft((previous) => ({ ...previous, status: value }));
-              clearError("status");
-            }}
+            onChange={(event) => set("status", event.target.value as SubscriptionDraft["status"])}
             aria-invalid={errors.status ? true : undefined}
             aria-describedby={describedBy("status")}
             className={SELECT_CLASS}
@@ -331,11 +403,7 @@ function SubscriptionForm({ organizationId, onAdded }: SubscriptionFormProps) {
             type="date"
             min={todayUtc()}
             value={draft.startDate}
-            onChange={(event) => {
-              const { value } = event.target;
-              setDraft((previous) => ({ ...previous, startDate: value }));
-              clearError("startDate");
-            }}
+            onChange={(event) => set("startDate", event.target.value)}
             aria-invalid={errors.startDate ? true : undefined}
             aria-describedby={describedBy("startDate")}
             className="h-11 sm:h-8"

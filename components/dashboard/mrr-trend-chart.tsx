@@ -20,7 +20,8 @@ export interface MRRTrendDatum {
   /** Tooltip heading: `Mar 2026`. */
   heading: string;
   mrrCents: number;
-  activeSubs: number;
+  /** Customers with MRR > 0 at the month-end snapshot. */
+  activeCustomers: number;
 }
 
 interface MRRTrendChartProps {
@@ -32,7 +33,7 @@ interface MRRTrendChartProps {
  * The page's hero visual: one series, month-end MRR, over twelve months.
  *
  * Chart decisions worth stating:
- *   - ONE series and ONE axis. Active subscriptions live on a different scale and
+ *   - ONE series and ONE axis. Active customers live on a different scale and
  *     get their own panel; a second y-axis here would be the single most
  *     misleading thing this dashboard could do.
  *   - Zero baseline. The fill reads as magnitude, so the area has to measure from
@@ -137,7 +138,7 @@ function TrendTooltip({ active, payload, currency }: TrendTooltipProps) {
         </span>
       </div>
       <p className="mt-1 pl-3.5 text-xs text-muted-foreground">
-        {formatCount(point.activeSubs)} active {point.activeSubs === 1 ? "subscription" : "subscriptions"}
+        {formatCount(point.activeCustomers)} active {point.activeCustomers === 1 ? "customer" : "customers"}
       </p>
     </div>
   );

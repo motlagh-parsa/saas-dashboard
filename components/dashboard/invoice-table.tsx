@@ -18,6 +18,8 @@ import { EmptyState } from "@/components/dashboard/empty-state";
 
 interface InvoiceTableProps {
   invoices: RecentInvoice[];
+  /** The workspace's reporting currency — every invoice is in it. */
+  currency: string;
   /**
    * Replaces the first-run empty state when a FILTER, rather than the absence of
    * data, produced zero rows. "No invoices yet" is wrong copy for a workspace
@@ -44,7 +46,7 @@ const STATUS_CLASS: Record<InvoiceStatus, string> = {
 /**
  * The amount column, pinned to the right edge of the table's scroll container.
  *
- * Plan, Issued and Status need about 450px between them before Amount is even
+ * Customer, Issued and Status need about 450px between them before Amount is even
  * reached, so on a phone the table is wider than the card it sits in. The shadcn
  * `Table` already wraps itself in `overflow-x-auto`, so that width is reachable —
  * but only by scrolling, and at rest it puts the last column past the card's
@@ -91,7 +93,7 @@ const AMOUNT_PINNED =
 const TABLE_SEPARATED =
   "border-separate border-spacing-0 [&_th]:border-b [&_td]:border-b [&_tbody_tr:last-child>td]:border-b-0";
 
-export function InvoiceTable({ invoices, empty }: InvoiceTableProps) {
+export function InvoiceTable({ invoices, currency, empty }: InvoiceTableProps) {
   if (invoices.length === 0) {
     // `undefined` means "no override", which is distinct from an override of
     // `null` — the latter would be a caller deliberately rendering nothing.
@@ -116,7 +118,7 @@ export function InvoiceTable({ invoices, empty }: InvoiceTableProps) {
         <TableHeader>
           <TableRow className="border-border hover:bg-transparent">
             <TableHead className="h-9 pl-4 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase">
-              Plan
+              Customer
             </TableHead>
             <TableHead className="hidden h-9 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase sm:table-cell">
               Reference
@@ -142,12 +144,14 @@ export function InvoiceTable({ invoices, empty }: InvoiceTableProps) {
           {invoices.map((invoice) => (
             <TableRow key={invoice.id} className="border-border">
               <TableCell className="py-2.5 pl-4">
-                <span className="font-medium text-foreground">
-                  {formatEnumLabel(invoice.subscription.tier)}
-                </span>
-                <span className="ml-1.5 text-xs text-muted-foreground">
-                  {formatEnumLabel(invoice.subscription.interval)}
-                </span>
+                <div className="flex min-w-0 flex-col leading-tight">
+                  <span className="truncate font-medium text-foreground">
+                    {invoice.customer.name}
+                  </span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {invoice.planName ?? "One-off charge"}
+                  </span>
+                </div>
               </TableCell>
 
               <TableCell className="hidden py-2.5 font-mono text-xs text-muted-foreground sm:table-cell">
@@ -174,7 +178,7 @@ export function InvoiceTable({ invoices, empty }: InvoiceTableProps) {
                   AMOUNT_PINNED,
                 )}
               >
-                {formatMoneyExact(invoice.amountCents, invoice.currency)}
+                {formatMoneyExact(invoice.amountCents, currency)}
               </TableCell>
             </TableRow>
           ))}

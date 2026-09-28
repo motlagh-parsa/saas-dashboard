@@ -31,7 +31,7 @@ interface NRRLedgerProps {
  */
 export function NRRLedger({ result, currency, comparison }: NRRLedgerProps) {
   const {
-    cohortSize,
+    cohortCustomers,
     startingMRRCents,
     endingMRRCents,
     expansionMRRCents,
@@ -64,10 +64,10 @@ export function NRRLedger({ result, currency, comparison }: NRRLedgerProps) {
         <p className="mt-2.5 text-xs text-muted-foreground text-balance">{caption}</p>
       </CardContent>
 
-      {cohortSize === 0 ? (
+      {cohortCustomers === 0 ? (
         <CardContent>
           <p className="rounded-md border border-dashed border-border px-3 py-4 text-xs text-muted-foreground text-balance">
-            No subscriptions were live when this period opened. Retention starts
+            No customer was paying when this period opened. Retention starts
             being measurable once a cohort exists to follow.
           </p>
         </CardContent>
@@ -100,9 +100,9 @@ export function NRRLedger({ result, currency, comparison }: NRRLedgerProps) {
       {/* mt-auto pins the cohort line to the bottom when this rail is stretched
           to match the taller headline panel beside it. */}
       <CardFooter className="mt-auto text-xs text-muted-foreground">
-        {cohortSize === 0
+        {cohortCustomers === 0
           ? `Measured over the last ${comparison.replace("previous ", "")}`
-          : `${formatCount(cohortSize)} ${cohortSize === 1 ? "subscription" : "subscriptions"} in the opening cohort`}
+          : `${formatCount(cohortCustomers)} paying ${cohortCustomers === 1 ? "customer" : "customers"} in the opening cohort`}
       </CardFooter>
     </Card>
   );

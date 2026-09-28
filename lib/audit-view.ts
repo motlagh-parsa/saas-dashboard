@@ -8,7 +8,7 @@
  */
 import type { Prisma } from "@prisma/client";
 
-import { EM_DASH, formatEnumLabel, formatMoneyExact } from "@/lib/format";
+import { EM_DASH, formatBillingInterval, formatEnumLabel, formatMoneyExact } from "@/lib/format";
 
 export const AUDIT_ACTION_LABELS = {
   "user.created": "Added user",
@@ -90,11 +90,15 @@ export function auditDetails(action: string, metadata: Prisma.JsonValue | null):
       return query ? `${rows}, matching “${query}”` : rows;
     }
     case "subscription.created": {
-      const tier = text(data, "tier");
+      const plan = text(data, "plan");
       const interval = text(data, "interval");
+      const intervalCount = integer(data, "intervalCount") ?? 1;
       const amountCents = integer(data, "amountCents");
-      if (!tier || !interval || amountCents === null) return EM_DASH;
-      return `${formatEnumLabel(tier)} · ${formatEnumLabel(interval)} · ${formatMoneyExact(amountCents, "USD")}`;
+      if (!plan || amountCents === null || (interval !== "MONTH" && interval !== "YEAR")) {
+        return EM_DASH;
+      }
+      const currency = text(data, "currency") ?? "USD";
+      return `${plan} · ${formatBillingInterval(interval, intervalCount)} · ${formatMoneyExact(amountCents, currency)}`;
     }
     default:
       return EM_DASH;

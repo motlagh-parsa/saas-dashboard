@@ -85,14 +85,22 @@ model VerificationToken {
 // Tenancy
 // ---------------------------------------------------------------------------
 
+/// A founder's WORKSPACE — the tenant. It is never the customer: the people who
+/// pay this founder are `Customer` rows inside it.
 model Organization {
   id        String   @id @default(cuid())
   name      String
   slug      String   @unique
+  /// ISO 4217 code — the workspace's single reporting currency. Every amount in
+  /// the workspace (plans, subscriptions, invoices, snapshots) is in it, which is
+  /// why none of those rows carries a currency of its own.
+  currency  String   @default("USD")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   memberships   Membership[]
+  customers     Customer[]
+  plans         Plan[]
   subscriptions Subscription[]
   invoices      Invoice[]
   snapshots     MetricSnapshot[]
@@ -115,81 +123,171 @@ model Membership {
 }
 
 // ---------------------------------------------------------------------------
-// Billing — the source of truth every dashboard number derives from
+// Billing — the source of truth every dashboard number derives from.
 //
-// NOTE: `Subscription.amountCents >= 0` is enforced by a CHECK constraint added in
-// migration 20260816121500_subscription_handoff_link_and_metric_indexes. Prisma has
-// no schema syntax for CHECK constraints and does not track them for drift, so the
-// migration is the only place it appears. A negative subscription price would break
-// the NRR expansion/contraction identity and make Postgres `ROUND()` disagree with
-// the seed's `Math.round()` on exact halves.
+// A workspace (Organization) is the TENANT. Everything below belongs to one
+// workspace and describes that founder's business: their Customers, the Plans
+// they sell, the Subscriptions and Invoices between the two. All amounts are
+// integer minor units in the workspace's `Organization.currency`.
+//
+// Every row that can arrive from outside carries `source` and an optional
+// `externalId`, unique per workspace, so a CSV re-import or a Stripe re-sync
+// updates the row it already wrote instead of duplicating it.
+//
+// CHECK constraints (Prisma has no schema syntax for them and does not track
+// them for drift, so the migrations are the only place they appear):
+//   - Subscription.amountCents >= 0 (20260816121500_…) and Plan.amountCents >= 0
+//     — a negative price would break the expansion/contraction identity.
+//   - Subscription.quantity >= 1, Subscription.intervalCount >= 1 and
+//     Plan.intervalCount >= 1 — MRR divides by the interval length, and a
+//     zero-quantity row would be a subscription that bills nothing forever.
 // ---------------------------------------------------------------------------
 
+/// Where a row came from. SAMPLE rows are generated demo data
+/// (lib/sample-data.ts) and are the only rows `removeSampleData` touches.
+enum DataSource {
+  MANUAL
+  CSV
+  API
+  STRIPE
+  SAMPLE
+}
+
+/// One of the founder's paying customers. A customer has many subscriptions
+/// over time; "active" is derived (a live subscription with MRR > 0), never stored.
+model Customer {
+  id             String     @id @default(cuid())
+  organizationId String
+  name           String
+  email          String?
+  externalId     String?
+  source         DataSource @default(MANUAL)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  /// Hidden from pickers and lists; history (and therefore every metric) is kept.
+  archivedAt     DateTime?
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptions Subscription[]
+  invoices      Invoice[]
+
+  @@unique([organizationId, externalId])
+  // The customer list and pickers: one tenant, alphabetical. Leading
+  // `organizationId` also covers the Organization cascade-delete FK.
+  @@index([organizationId, name])
+}
+
+/// A price the founder sells at. A subscription COPIES the plan's amount and
+/// interval when it starts, so repricing a plan never rewrites history.
+model Plan {
+  id             String          @id @default(cuid())
+  organizationId String
+  name           String
+  /// Price per unit per interval.
+  amountCents    Int
+  interval       BillingInterval
+  /// Stripe-style: quarterly is MONTH with intervalCount 3.
+  intervalCount  Int             @default(1)
+  externalId     String?
+  source         DataSource      @default(MANUAL)
+  archivedAt     DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptions Subscription[]
+
+  @@unique([organizationId, externalId])
+  // Also serves the plan pickers and the Organization cascade-delete FK.
+  @@unique([organizationId, name])
+}
+
+/// One lifecycle SEGMENT of a customer's subscription: a single price, quantity
+/// and interval for a span of time. A plan change ends one segment and starts
+/// another on the same instant.
 model Subscription {
   id             String             @id @default(cuid())
   organizationId String
-  tier           PlanTier
+  customerId     String
+  /// Null for a custom-priced subscription; also nulled if its plan is deleted.
+  planId         String?
   status         SubscriptionStatus @default(ACTIVE)
+  /// Price per unit per interval, copied from the plan when the segment started.
   amountCents    Int
-  currency       String             @default("USD")
-  interval       BillingInterval    @default(MONTHLY)
+  quantity       Int                @default(1)
+  interval       BillingInterval    @default(MONTH)
+  intervalCount  Int                @default(1)
   startedAt      DateTime
+  /// Set only for a real cancellation — a segment superseded by a plan change
+  /// has `endedAt` but no `canceledAt`.
   canceledAt     DateTime?
   endedAt        DateTime?
 
-  /// Plan-change hand-off link: the segment this one CONTINUES.
-  /// Set only when a segment supersedes another (upgrade/downgrade/renewal change);
-  /// NULL for genuinely new or reactivated customers. `@unique` is load-bearing —
-  /// it makes the hand-off graph a forest of simple paths (a segment has at most one
-  /// predecessor via the column, and at most one successor via the unique index), so
-  /// the NRR chain walk in lib/metrics.ts cannot fan out, fan in, or double-count.
+  /// Plan-change hand-off link: the segment this one CONTINUES. Records what
+  /// happened; metrics do NOT depend on it — `customerId` says who is who.
   previousSubscriptionId String? @unique
+
+  externalId String?
+  source     DataSource @default(MANUAL)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  plan         Plan?         @relation(fields: [planId], references: [id], onDelete: SetNull)
   // SetNull, not Cascade: deleting an old segment must not delete the customer's
-  // whole future lifecycle — it just breaks the link. Restrict would block the
-  // Organization cascade delete above.
+  // whole future lifecycle — it just breaks the link.
   previous     Subscription? @relation("SubscriptionHandoff", fields: [previousSubscriptionId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   next         Subscription? @relation("SubscriptionHandoff")
   invoices     Invoice[]
 
+  @@unique([organizationId, externalId])
   // Live-as-of predicate (`startedAt <= t AND (endedAt IS NULL OR endedAt > t)`)
-  // scoped to a tenant. Serves getMRR/mrrByCurrencyQuery, the NRR opening cohort,
-  // and getActiveSubscriptions. Leading `organizationId` also covers the plain
-  // tenant lookup and the Organization cascade-delete FK.
+  // scoped to a tenant: MRR, the retention cohorts, plan mix. Leading
+  // `organizationId` also covers the Organization cascade-delete FK.
   @@index([organizationId, startedAt, endedAt])
-  // "which of this tenant's segments ended in this window" — the hand-off/churn
-  // direction, and the churn denominator's endedAt half.
+  // "which of this tenant's segments ended in this window" — the churn side.
   @@index([organizationId, endedAt])
-  // churnQuery's numerator: canceledAt in (start, end], tenant-scoped.
-  @@index([organizationId, canceledAt])
+  // One customer's history within a tenant: the customer list, per-customer MRR.
+  @@index([organizationId, customerId])
+  // The Customer cascade-delete FK and the Plan SetNull FK: without these,
+  // deleting one customer or plan scans every subscription.
+  @@index([customerId])
+  @@index([planId])
 }
 
 model Invoice {
   id             String        @id @default(cuid())
   organizationId String
-  subscriptionId String
+  customerId     String
+  /// Null for a one-off charge.
+  subscriptionId String?
   amountCents    Int
-  currency       String        @default("USD")
   status         InvoiceStatus @default(PAID)
   issuedAt       DateTime
+  dueAt          DateTime?
   paidAt         DateTime?
+  externalId     String?
+  source         DataSource    @default(MANUAL)
   createdAt      DateTime      @default(now())
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 
+  @@unique([organizationId, externalId])
   @@index([organizationId, issuedAt])
   @@index([subscriptionId])
+  // The Customer cascade-delete FK.
+  @@index([customerId])
 }
 
 // ---------------------------------------------------------------------------
-// Daily rollup — recomputed from the rows above, never hand-written.
-// ARR = mrrCents * 12. Churn rate = churnedSubs / activeSubs at period start.
-// Neither is stored: both are derived at read time.
+// Daily rollup — recomputed from the rows above, never hand-written
+// (lib/snapshot-formula.ts). A row for day D holds the STATE at D's UTC midnight
+// and the FLOWS in (D − 1 day, D]. ARR (= MRR × 12) and churn rates are derived
+// at read time, not stored.
 // ---------------------------------------------------------------------------
 
 model MetricSnapshot {
@@ -197,12 +295,16 @@ model MetricSnapshot {
   organizationId String
   date           DateTime @db.Date
 
-  mrrCents    Int
-  activeSubs  Int
-  newSubs     Int
-  churnedSubs Int
-  activeUsers Int
-  newUsers    Int
+  mrrCents         Int
+  activeSubs       Int
+  newSubs          Int
+  churnedSubs      Int
+  /// Customers with at least one live subscription with MRR > 0.
+  activeCustomers  Int
+  /// Active now, not active the day before, and never active before.
+  newCustomers     Int
+  /// Active the day before, not active now.
+  churnedCustomers Int
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -323,13 +425,6 @@ enum Role {
   MEMBER
 }
 
-enum PlanTier {
-  FREE
-  STARTER
-  PRO
-  ENTERPRISE
-}
-
 enum SubscriptionStatus {
   TRIALING
   ACTIVE
@@ -338,8 +433,8 @@ enum SubscriptionStatus {
 }
 
 enum BillingInterval {
-  MONTHLY
-  YEARLY
+  MONTH
+  YEAR
 }
 
 enum InvoiceStatus {
