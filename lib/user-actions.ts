@@ -1,11 +1,13 @@
 "use server";
 
-// User management for /dashboard/users: suspend, unsuspend, delete, change role.
+// User management for /dashboard/users: add, rename, suspend, unsuspend, delete,
+// change role.
 //
 // File-level `"use server"`: the row controls that call these are client
 // islands, so every export is a public endpoint and everything in the FormData
-// is untrusted. It exports ONLY the actions; the result shape lives in
-// lib/user-action-state.ts and the role rules in lib/user-permissions.ts.
+// is untrusted. It exports ONLY the actions; the result shapes live in
+// lib/user-action-state.ts and lib/user-form.ts, and the role rules in
+// lib/user-permissions.ts.
 //
 // ---------------------------------------------------------------------------
 // Which workspace, which user
@@ -15,11 +17,11 @@
 // composite key: the caller must be an OWNER or ADMIN of that org, the target
 // must be a member of it, and the caller must outrank the target there.
 //
-// Two of these actions reach past the workspace. `suspendedAt` lives on User,
-// and deleting a User removes their account everywhere. So those two also
-// require authority in every workspace the target belongs to (see
-// `hasAccountReach`). Without that rule, an admin of one workspace could lock
-// out or delete someone who owns a different one.
+// Three of these actions reach past the workspace. `name` and `suspendedAt` live
+// on User, and deleting a User removes their account everywhere. So those three
+// also require authority in every workspace the target belongs to (see
+// `hasAccountReach`). Without that rule, an admin of one workspace could rename,
+// lock out or delete someone who owns a different one.
 //
 // ---------------------------------------------------------------------------
 // Concurrency
@@ -36,6 +38,13 @@ import { z } from "zod";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import type { UserActionState } from "@/lib/user-action-state";
+import {
+  EMAIL_TAKEN,
+  createUserSchema,
+  updateUserSchema,
+  userFormFieldErrors,
+  type UserFormState,
+} from "@/lib/user-form";
 import { assignableRoles, canManage, hasAccountReach } from "@/lib/user-permissions";
 
 const STALE_PAGE = "This page is out of date. Reload it and try again.";
@@ -129,7 +138,7 @@ async function checkAccountReach(
 
   return hasAccountReach(mine, theirs)
     ? null
-    : "This person also belongs to workspaces you don't manage, so only an owner there can suspend or delete their account.";
+    : "This person also belongs to workspaces you don't manage, so only an owner there can edit, suspend or delete their account.";
 }
 
 async function inTransaction(
@@ -266,4 +275,114 @@ export async function updateUserRole(
 
   if (result.status === "success") revalidatePath(USERS_PATH);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Add and rename — form actions with per-field errors (lib/user-form.ts)
+// ---------------------------------------------------------------------------
+
+function formFailure(message: string): UserFormState {
+  return { status: "error", message, fieldErrors: {} };
+}
+
+/**
+ * Creates a NEW account and adds it to the rendered workspace, in one nested
+ * write, so a failure never leaves an account that belongs to no workspace.
+ *
+ * No password: an account made here cannot sign in until it has one, and
+ * nothing in the product sets one yet. An email that already has an account is
+ * refused rather than added to this workspace. "Email already in use" says no
+ * more than the public register form already does.
+ */
+export async function createUser(
+  _previous: UserFormState,
+  formData: FormData,
+): Promise<UserFormState> {
+  const session = await requireSession();
+
+  const organizationId = idSchema.safeParse(formData.get("organizationId"));
+  if (!organizationId.success) return formFailure(STALE_PAGE);
+
+  // Composite primary key — a miss for any org the caller does not belong to.
+  const caller = await prisma.membership.findUnique({
+    where: {
+      userId_organizationId: { userId: session.user.id, organizationId: organizationId.data },
+    },
+    select: { role: true },
+  });
+  if (caller === null) return formFailure(STALE_PAGE);
+  if (caller.role === "MEMBER") return formFailure("Only owners and admins can add users.");
+
+  const parsed = createUserSchema.safeParse({
+    name: formData.get("name"),
+    email: formData.get("email"),
+    role: formData.get("role"),
+  });
+  if (!parsed.success) {
+    return { status: "error", message: null, fieldErrors: userFormFieldErrors(parsed.error) };
+  }
+  const { name, email, role } = parsed.data;
+
+  if (!assignableRoles(caller.role).includes(role)) {
+    return { status: "error", message: null, fieldErrors: { role: "Only an owner can add an owner." } };
+  }
+
+  const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+  if (existing !== null) {
+    return { status: "error", message: null, fieldErrors: { email: EMAIL_TAKEN } };
+  }
+
+  try {
+    await prisma.user.create({
+      data: {
+        name,
+        email,
+        memberships: { create: { organizationId: organizationId.data, role } },
+      },
+      select: { id: true },
+    });
+  } catch (error: unknown) {
+    // The unique index is the real guard: two adds racing with one email both
+    // pass the check above, and exactly one of them lands here.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return { status: "error", message: null, fieldErrors: { email: EMAIL_TAKEN } };
+    }
+    throw error;
+  }
+
+  revalidatePath(USERS_PATH);
+  return { status: "success", message: null, fieldErrors: {} };
+}
+
+/**
+ * Renames a member of the rendered workspace. `User.name` is account-wide, so
+ * this takes the same reach as suspend and delete, not only a role check here.
+ */
+export async function updateUser(
+  _previous: UserFormState,
+  formData: FormData,
+): Promise<UserFormState> {
+  const target = await readTarget(formData);
+  if (target === null) return formFailure(STALE_PAGE);
+
+  const parsed = updateUserSchema.safeParse({ name: formData.get("name") });
+  if (!parsed.success) {
+    return { status: "error", message: null, fieldErrors: userFormFieldErrors(parsed.error) };
+  }
+  const { name } = parsed.data;
+
+  const result = await inTransaction(async (tx) => {
+    const roles = await checkRoles(tx, target);
+    if (!roles.ok) return failure(roles.message);
+    const reach = await checkAccountReach(tx, target);
+    if (reach !== null) return failure(reach);
+
+    await tx.user.update({ where: { id: target.userId }, data: { name }, select: { id: true } });
+    return success("User updated.");
+  });
+
+  if (result.status !== "success") return formFailure(result.message ?? STALE_PAGE);
+
+  revalidatePath(USERS_PATH);
+  return { status: "success", message: null, fieldErrors: {} };
 }

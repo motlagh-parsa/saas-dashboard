@@ -1,0 +1,265 @@
+"use client";
+
+// "Add user" — creates a new account in the workspace on screen.
+//
+// Two components on purpose, the add-subscription dialog's pattern: the dialog
+// owns only `open`, and the form inside is remounted (fresh `key`) every time
+// it opens, so a new attempt never inherits the last one's draft or errors.
+//
+// Validation runs twice with one schema (lib/user-form.ts): here on submit for
+// instant feedback, and again in `createUser`, which is the check that counts.
+// Fields are CONTROLLED because React resets uncontrolled inputs after every
+// form action, including a rejected one.
+import { useActionState, useId, useState } from "react";
+import type { FormEvent } from "react";
+import type { Role } from "@prisma/client";
+import { Loader2, Plus, TriangleAlert } from "lucide-react";
+
+import { formatEnumLabel } from "@/lib/format";
+import { createUser } from "@/lib/user-actions";
+import {
+  IDLE_USER_FORM,
+  USER_NAME_MAX,
+  createUserSchema,
+  userFormFieldErrors,
+  type UserFormField,
+  type UserFormFieldErrors,
+  type UserFormState,
+} from "@/lib/user-form";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { toast } from "@/components/dashboard/use-toast";
+
+interface UserDraft {
+  name: string;
+  email: string;
+  role: Role;
+}
+
+/** Order in which fields appear, so the first invalid one can take focus. */
+const FIELD_ORDER: readonly UserFormField[] = ["name", "email", "role"];
+
+/** Same native-select styling as the add-subscription and schedule dialogs. */
+const SELECT_CLASS =
+  "h-11 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 text-base transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 sm:h-8 md:text-sm dark:bg-input/30 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40";
+
+const ERROR_CLASS = "text-xs text-destructive";
+
+interface CreateUserDialogProps {
+  /** The workspace this page shows — the action re-checks the caller's role in it. */
+  organizationId: string;
+  /** Roles the caller may hand out: an admin cannot add an owner. */
+  roles: readonly Role[];
+}
+
+export function CreateUserDialog({ organizationId, roles }: CreateUserDialogProps) {
+  const [open, setOpen] = useState<boolean>(false);
+  // Bumped on every open, so the form below mounts fresh each time.
+  const [attempt, setAttempt] = useState<number>(0);
+
+  function handleOpenChange(next: boolean): void {
+    if (next) setAttempt((previous) => previous + 1);
+    setOpen(next);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          className="h-11 bg-brand px-4 text-brand-foreground hover:bg-brand/90 sm:h-9"
+        >
+          <Plus aria-hidden />
+          Add user
+        </Button>
+      </DialogTrigger>
+
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Add a user</DialogTitle>
+          <DialogDescription>
+            Creates a new account in this workspace. It has no password, so they
+            can&apos;t sign in until invitations are available.
+          </DialogDescription>
+        </DialogHeader>
+
+        <CreateUserForm
+          key={attempt}
+          organizationId={organizationId}
+          roles={roles}
+          onAdded={() => setOpen(false)}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface CreateUserFormProps {
+  organizationId: string;
+  roles: readonly Role[];
+  onAdded: () => void;
+}
+
+function CreateUserForm({ organizationId, roles, onAdded }: CreateUserFormProps) {
+  const [draft, setDraft] = useState<UserDraft>({
+    name: "",
+    email: "",
+    role: roles.includes("MEMBER") ? "MEMBER" : (roles[0] ?? "MEMBER"),
+  });
+  const [clientErrors, setClientErrors] = useState<UserFormFieldErrors>({});
+
+  // Closing and confirming happen in the action's own completion path — after
+  // the server has said yes — rather than in an effect watching the state.
+  const [state, formAction, pending] = useActionState(
+    async (previous: UserFormState, formData: FormData): Promise<UserFormState> => {
+      const result = await createUser(previous, formData);
+      if (result.status === "success") {
+        toast.success("User added", { description: draft.name.trim() });
+        onAdded();
+      }
+      return result;
+    },
+    IDLE_USER_FORM,
+  );
+
+  const baseId = useId();
+  const fieldId = (field: UserFormField): string => `${baseId}-${field}`;
+  const errorId = (field: UserFormField): string => `${baseId}-${field}-error`;
+
+  const errors: UserFormFieldErrors = { ...clientErrors, ...state.fieldErrors };
+
+  function update(field: UserFormField, value: string): void {
+    setDraft((previous) => ({ ...previous, [field]: value }));
+    if (clientErrors[field]) setClientErrors((previous) => ({ ...previous, [field]: undefined }));
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>): void {
+    if (pending) {
+      event.preventDefault();
+      return;
+    }
+    const result = createUserSchema.safeParse(draft);
+    if (result.success) {
+      setClientErrors({});
+      return; // let the form action run
+    }
+
+    event.preventDefault();
+    const nextErrors = userFormFieldErrors(result.error);
+    setClientErrors(nextErrors);
+    const firstInvalid = FIELD_ORDER.find((field) => nextErrors[field]);
+    if (firstInvalid) {
+      const control = event.currentTarget.elements.namedItem(firstInvalid);
+      if (control instanceof HTMLElement) control.focus();
+    }
+  }
+
+  function describedBy(field: UserFormField): string | undefined {
+    return errors[field] ? errorId(field) : undefined;
+  }
+
+  function fieldError(field: UserFormField) {
+    return errors[field] ? (
+      <p id={errorId(field)} className={ERROR_CLASS}>
+        {errors[field]}
+      </p>
+    ) : null;
+  }
+
+  return (
+    <form action={formAction} onSubmit={handleSubmit} noValidate className="grid gap-4">
+      <input type="hidden" name="organizationId" value={organizationId} />
+
+      {state.message ? (
+        <p
+          role="alert"
+          className="flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2.5 text-sm text-destructive"
+        >
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>{state.message}</span>
+        </p>
+      ) : null}
+
+      <div className="grid gap-2">
+        <Label htmlFor={fieldId("name")}>Full name</Label>
+        <Input
+          id={fieldId("name")}
+          name="name"
+          type="text"
+          autoComplete="off"
+          maxLength={USER_NAME_MAX}
+          value={draft.name}
+          onChange={(event) => update("name", event.target.value)}
+          aria-invalid={errors.name ? true : undefined}
+          aria-describedby={describedBy("name")}
+          className="h-11 sm:h-8"
+        />
+        {fieldError("name")}
+      </div>
+
+      <div className="grid gap-2">
+        <Label htmlFor={fieldId("email")}>Email</Label>
+        <Input
+          id={fieldId("email")}
+          name="email"
+          type="email"
+          autoComplete="off"
+          spellCheck={false}
+          value={draft.email}
+          onChange={(event) => update("email", event.target.value)}
+          aria-invalid={errors.email ? true : undefined}
+          aria-describedby={describedBy("email")}
+          className="h-11 sm:h-8"
+        />
+        {fieldError("email")}
+      </div>
+
+      <div className="grid gap-2">
+        <Label htmlFor={fieldId("role")}>Role</Label>
+        <select
+          id={fieldId("role")}
+          name="role"
+          value={draft.role}
+          onChange={(event) => update("role", event.target.value)}
+          aria-invalid={errors.role ? true : undefined}
+          aria-describedby={describedBy("role")}
+          className={SELECT_CLASS}
+        >
+          {roles.map((role) => (
+            <option key={role} value={role}>
+              {formatEnumLabel(role)}
+            </option>
+          ))}
+        </select>
+        {fieldError("role")}
+      </div>
+
+      <DialogFooter>
+        <DialogClose asChild>
+          <Button type="button" variant="outline" className="h-11 sm:h-8">
+            Cancel
+          </Button>
+        </DialogClose>
+        <Button
+          type="submit"
+          aria-disabled={pending ? "true" : undefined}
+          className="h-11 bg-brand text-brand-foreground hover:bg-brand/90 sm:h-8"
+        >
+          {pending ? <Loader2 aria-hidden className="animate-spin" /> : null}
+          {pending ? "Adding…" : "Add user"}
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}

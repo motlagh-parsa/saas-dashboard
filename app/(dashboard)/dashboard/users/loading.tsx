@@ -28,7 +28,10 @@ export default function UsersLoading() {
             <Skeleton className="h-6 w-24" />
             <Skeleton className="h-3.5 w-52" />
           </div>
-          <Skeleton className="h-11 w-full rounded-lg sm:h-9 sm:w-72" />
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <Skeleton className="h-11 w-full rounded-lg sm:h-9 sm:w-72" />
+            <Skeleton className="h-11 w-28 shrink-0 rounded-lg sm:h-9" />
+          </div>
         </div>
 
         <Card className="mt-3 gap-0 py-0">

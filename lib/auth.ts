@@ -10,6 +10,7 @@ import { getServerSession } from "next-auth/next";
 import type { Session } from "next-auth";
 import type { Adapter } from "next-auth/adapters";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import GitHubProvider from "next-auth/providers/github";
 import CredentialsProvider from "next-auth/providers/credentials";
@@ -53,7 +54,9 @@ providers.push(
     //      checked against their stored scrypt hash. Users without a hash
     //      (GitHub-only accounts) can never match here.
     // Every failure returns null, which NextAuth reports as the one generic
-    // "CredentialsSignin" — never "no such user" vs "wrong password".
+    // "CredentialsSignin" — never "no such user" vs "wrong password". A
+    // suspended account fails the same way, and only AFTER the password check,
+    // so neither the message nor the timing tells a guesser the password was right.
     async authorize(rawCredentials) {
       const parsed = credentialsSchema.safeParse(rawCredentials);
       if (!parsed.success) return null;
@@ -67,21 +70,31 @@ providers.push(
         // Resolve to a REAL database user so the demo session carries a valid id
         // with memberships/orgs (prisma/seed.ts upserts the same email). Upsert
         // keeps login working even before the seed has been run.
-        return prisma.user.upsert({
+        const demo = await prisma.user.upsert({
           where: { email: env.DEMO_EMAIL },
           update: {},
           create: { email: env.DEMO_EMAIL, name: "Demo Operator" },
-          select: { id: true, name: true, email: true, image: true },
+          select: { id: true, name: true, email: true, image: true, suspendedAt: true },
         });
+        if (demo.suspendedAt !== null) return null;
+        return { id: demo.id, name: demo.name, email: demo.email, image: demo.image };
       }
 
       // 2. Registered user. Emails are stored lowercased by `registerUser`.
       const user = await prisma.user.findUnique({
         where: { email },
-        select: { id: true, name: true, email: true, image: true, passwordHash: true },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          image: true,
+          passwordHash: true,
+          suspendedAt: true,
+        },
       });
       if (user === null || user.passwordHash === null) return null;
       if (!(await verifyPassword(password, user.passwordHash))) return null;
+      if (user.suspendedAt !== null) return null;
 
       // The hash never leaves this function.
       return { id: user.id, name: user.name, email: user.email, image: user.image };
@@ -114,13 +127,43 @@ export const authOptions: NextAuthOptions = {
 };
 
 /**
+ * Whether the account behind a session may still use the app: it exists, and it
+ * is not suspended.
+ *
+ * Sessions are JWTs, so the token stays valid for its whole lifetime no matter
+ * what happens to the account. `authorize` stops a suspended user signing in
+ * again, but only this check cuts off a session that is ALREADY open. It also
+ * catches a deleted account, whose leftover token would otherwise carry an id
+ * that matches nothing.
+ *
+ * A primary-key lookup. Wrapped in React `cache()` so a page and the helpers it
+ * calls during one render share a single read, the same way `getActiveOrgId`
+ * does. Route handlers and Server Actions are not a React render, so there each
+ * call simply runs.
+ */
+const isAccountActive = cache(async (userId: string): Promise<boolean> => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { suspendedAt: true },
+  });
+  return user !== null && user.suspendedAt === null;
+});
+
+/**
  * The real authorization gate. Re-checks the session server-side and redirects
  * unauthenticated callers to the sign-in page. Middleware is defense-in-depth;
  * THIS is what every protected page and every Server Action must call.
+ *
+ * A suspended or deleted account is sent to sign-in too, where `authorize`
+ * refuses it. The edge middleware cannot do this check: it only verifies the
+ * JWT signature and has no database access.
  */
 export async function requireSession(): Promise<Session> {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
+    redirect("/sign-in");
+  }
+  if (!(await isAccountActive(session.user.id))) {
     redirect("/sign-in");
   }
   return session;

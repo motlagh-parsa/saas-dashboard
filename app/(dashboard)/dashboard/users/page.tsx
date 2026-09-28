@@ -14,8 +14,9 @@
 //      settings page's reasoning: nothing can start before the org id is known,
 //      and a single table streaming in pieces would buy no latency.
 //
-// Writes. Role, suspend and delete are Server Actions in lib/user-actions.ts,
-// driven per row by `UserRowActions`. What each row OFFERS is decided here from
+// Writes. Add user is `CreateUserDialog` in the header; role, edit, suspend and
+// delete are driven per row by `UserRowActions`. All are Server Actions in
+// lib/user-actions.ts. What each row OFFERS is decided here from
 // lib/user-permissions.ts; the actions re-check all of it.
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -56,6 +57,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { CreateUserDialog } from "@/components/dashboard/create-user-dialog";
 import { EmptyState } from "@/components/dashboard/empty-state";
 import { UserRowActions } from "@/components/dashboard/user-row-actions";
 import { UsersSearch } from "@/components/dashboard/users-search";
@@ -240,9 +242,19 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
             {formatCount(totalCount)} {totalCount === 1 ? "user" : "users"}
           </p>
         </div>
-        {/* Keyed by workspace: a switch refreshes this page in place, and the
-            old workspace's search text must not survive into the new one. */}
-        <UsersSearch key={organizationId} query={query} />
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          {/* Keyed by workspace: a switch refreshes this page in place, and the
+              old workspace's search text must not survive into the new one. */}
+          <UsersSearch key={organizationId} query={query} />
+          {/* The action re-checks this; members are simply not offered a
+              control that would refuse them — the revenue page's pattern. */}
+          {canManageUsers ? (
+            <CreateUserDialog
+              organizationId={organizationId}
+              roles={assignableRoles(callerRole)}
+            />
+          ) : null}
+        </div>
       </header>
 
       <section className="rise mt-3 [animation-delay:60ms]">
@@ -400,6 +412,7 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
                             <UserRowActions
                               organizationId={organizationId}
                               userId={row.user.id}
+                              name={row.user.name}
                               displayName={row.displayName}
                               role={row.role}
                               suspended={suspended}

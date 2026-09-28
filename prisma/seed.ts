@@ -559,6 +559,29 @@ async function clearSeedData(): Promise<void> {
   ]);
 }
 
+/**
+ * Teammates in the demo org, so /dashboard/users has people to manage. No
+ * `passwordHash`: they are demo-only and can never sign in.
+ */
+interface DemoTeammate {
+  readonly name: string;
+  readonly email: string;
+  readonly role: Role;
+  readonly suspendedAt: Date | null;
+}
+
+const DEMO_TEAM: readonly DemoTeammate[] = [
+  { name: "Alice Chen", email: "alice@acme-demo.dev", role: "ADMIN", suspendedAt: null },
+  { name: "Bob Martinez", email: "bob@acme-demo.dev", role: "MEMBER", suspendedAt: null },
+  {
+    name: "Carol Singh",
+    email: "carol@acme-demo.dev",
+    role: "MEMBER",
+    suspendedAt: new Date("2026-06-01T00:00:00.000Z"),
+  },
+  { name: "Dan Lee", email: "dan@acme-demo.dev", role: "MEMBER", suspendedAt: null },
+];
+
 async function main(): Promise<void> {
   await clearSeedData();
 
@@ -568,6 +591,25 @@ async function main(): Promise<void> {
     update: { name: "Demo Operator" },
     create: { email: "demo@saas-dashboard.dev", name: "Demo Operator" },
   });
+
+  // Upsert, not create: `clearSeedData` leaves User rows alone, so a plain create
+  // would fail on the unique email the second time the seed runs. `update` puts
+  // back the seeded name and suspension, undoing anything changed from the Users page.
+  const demoTeam = await Promise.all(
+    DEMO_TEAM.map(async (teammate) => {
+      const user = await prisma.user.upsert({
+        where: { email: teammate.email },
+        update: { name: teammate.name, suspendedAt: teammate.suspendedAt },
+        create: {
+          email: teammate.email,
+          name: teammate.name,
+          suspendedAt: teammate.suspendedAt,
+        },
+        select: { id: true },
+      });
+      return { userId: user.id, role: teammate.role };
+    }),
+  );
 
   const invoiceRows: Prisma.InvoiceCreateManyInput[] = [];
   let churnEventCount = 0;
@@ -593,6 +635,16 @@ async function main(): Promise<void> {
         role,
       },
     });
+
+    // The demo team joins the first org only. Memberships were cleared above,
+    // so these are always fresh rows.
+    if (orgIndex === 0) {
+      for (const teammate of demoTeam) {
+        await prisma.membership.create({
+          data: { userId: teammate.userId, organizationId: org.id, role: teammate.role },
+        });
+      }
+    }
 
     // Segments are built in lifecycle order, so a predecessor always exists in this
     // map by the time its successor is written.

@@ -1,7 +1,7 @@
 "use client";
 
-// Per-row controls on /dashboard/users: change role, suspend or unsuspend, and
-// delete.
+// Per-row controls on /dashboard/users: change role, edit, suspend or unsuspend,
+// and delete.
 //
 // What is OFFERED here is decided on the server (lib/user-permissions.ts) and
 // arrives as props. Every action re-checks it in lib/user-actions.ts, which is
@@ -9,9 +9,9 @@
 // trusted.
 //
 // Feedback: role and suspension changes report through a toast, because the
-// row they would otherwise annotate re-renders under them. Delete reports
-// inside its confirm dialog, which stays open on a refusal so the reason is read
-// in the same place the decision was made.
+// row they would otherwise annotate re-renders under them. Edit and delete
+// report inside their dialogs, which stay open on a refusal so the reason is
+// read in the same place the decision was made.
 import { startTransition, useActionState, useId, useState } from "react";
 import type { FormEvent } from "react";
 import type { Role } from "@prisma/client";
@@ -41,6 +41,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { EditUserDialog } from "@/components/dashboard/edit-user-dialog";
 import { toast } from "@/components/dashboard/use-toast";
 
 /** Touch first: 44px on a phone, tightened to the table's density on a pointer. */
@@ -51,19 +52,22 @@ type Action = (previous: UserActionState, formData: FormData) => Promise<UserAct
 interface UserRowActionsProps {
   organizationId: string;
   userId: string;
+  /** The stored name, possibly null — what the edit dialog starts from. */
+  name: string | null;
   /** Already resolved through `formatPersonName` — used in labels and toasts. */
   displayName: string;
   role: Role;
   suspended: boolean;
   /** Roles the caller may set on this person. Empty means the role is out of reach. */
   assignableRoles: readonly Role[];
-  /** Whether suspend and delete are offered: the caller outranks them everywhere they belong. */
+  /** Whether edit, suspend and delete are offered: the caller outranks them everywhere they belong. */
   canManageAccount: boolean;
 }
 
 export function UserRowActions({
   organizationId,
   userId,
+  name,
   displayName,
   role,
   suspended,
@@ -163,6 +167,15 @@ export function UserRowActions({
 
         {canManageAccount ? (
           <>
+            <EditUserDialog
+              organizationId={organizationId}
+              userId={userId}
+              currentName={name}
+              displayName={displayName}
+              disabled={busy}
+              className={CONTROL_HEIGHT}
+            />
+
             <form action={suspended ? unsuspendAction : suspendAction} onSubmit={guard}>
               <input type="hidden" name="organizationId" value={organizationId} />
               <input type="hidden" name="userId" value={userId} />
@@ -190,7 +203,7 @@ export function UserRowActions({
 
       {canChangeRole && !canManageAccount ? (
         <p className="max-w-56 text-right text-[0.6875rem] text-muted-foreground text-balance">
-          Also in workspaces you don&apos;t manage, so suspend and delete are unavailable.
+          Also in workspaces you don&apos;t manage, so edit, suspend and delete are unavailable.
         </p>
       ) : null}
     </div>
