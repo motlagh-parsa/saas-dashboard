@@ -24,6 +24,9 @@ model User {
   /// plaintext password. NULL for users who only sign in through GitHub OAuth or
   /// the env-configured demo account.
   passwordHash  String?
+  /// Set when an owner or admin suspends the account from /dashboard/users;
+  /// NULL means active. Account-wide, not per workspace — see lib/user-actions.ts.
+  suspendedAt   DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

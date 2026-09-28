@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   Settings,
   TrendingUp,
+  UserCog,
   Users,
 } from "lucide-react";
 import type { ComponentType } from "react";
@@ -34,6 +35,9 @@ export const secondaryNav: NavItem[] = [
   // server in `app/(dashboard)/layout.tsx` and passed into `SidebarNav`. A
   // hardcoded number in a module constant would go stale the moment anything is
   // marked read, and would disagree with the bell two inches away.
+  // UserCog, not Users: Customers above already wears Users, and two identical
+  // glyphs in one rail make the icons useless for scanning.
+  { label: "Users", href: "/dashboard/users", icon: UserCog },
   { label: "Notifications", href: NOTIFICATIONS_HREF, icon: Bell },
   { label: "Settings", href: "/dashboard/settings", icon: Settings },
 ];
