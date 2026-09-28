@@ -17,6 +17,8 @@ import "server-only";
 
 import { getActiveOrgId } from "@/lib/active-org";
 import { requireSession } from "@/lib/auth";
+import { neutralizeFormula } from "@/lib/csv";
+import { currencyFractionDigits } from "@/lib/format";
 import {
   getChurnRateTrend,
   getMRRTrend,
@@ -48,9 +50,10 @@ function encodeCsv(rows: readonly CsvRow[]): string {
   return rows.map((row) => row.map(encodeCell).join(",")).join("\r\n") + "\r\n";
 }
 
-/** Integer cents -> "1234.50". */
-function money(cents: number): string {
-  return (cents / 100).toFixed(2);
+/** Integer minor units -> "1234.50" ("1234" for a zero-decimal currency like JPY). */
+function money(cents: number, currency: string): string {
+  const digits = currencyFractionDigits(currency);
+  return (cents / 10 ** digits).toFixed(digits);
 }
 
 /** Fraction -> "5.23" (percent). `null` stays null: an undefined rate is not 0%. */
@@ -78,7 +81,7 @@ async function buildMrrSummary(organizationId: string, currency: string): Promis
     ...trend.map((point): CsvRow => [
       point.month,
       point.asOfDate,
-      money(point.mrrCents),
+      money(point.mrrCents, currency),
       point.activeCustomers,
       point.newCustomers,
       point.churnedCustomers,
@@ -109,8 +112,8 @@ async function buildChurnAnalysis(organizationId: string, currency: string): Pro
       point.customersAtStart,
       point.churnedCustomers,
       percent(point.rate),
-      money(point.startingMRRCents),
-      money(point.churnedMRRCents),
+      money(point.startingMRRCents, currency),
+      money(point.churnedMRRCents, currency),
       percent(point.revenueRate),
     ]),
   ];
@@ -140,14 +143,14 @@ async function buildRevenueBridge(organizationId: string, currency: string): Pro
     ...movement.map((point): CsvRow => [
       point.month,
       point.isComplete,
-      money(point.startingMRRCents),
-      money(point.newMRRCents),
-      money(point.reactivationMRRCents),
-      money(point.expansionMRRCents),
-      money(point.contractionMRRCents),
-      money(point.churnedMRRCents),
-      money(point.endingMRRCents),
-      money(point.endingMRRCents - point.startingMRRCents),
+      money(point.startingMRRCents, currency),
+      money(point.newMRRCents, currency),
+      money(point.reactivationMRRCents, currency),
+      money(point.expansionMRRCents, currency),
+      money(point.contractionMRRCents, currency),
+      money(point.churnedMRRCents, currency),
+      money(point.endingMRRCents, currency),
+      money(point.endingMRRCents - point.startingMRRCents, currency),
       point.payingCustomersAtStart,
       point.newCustomers,
       point.reactivatedCustomers,
@@ -172,15 +175,21 @@ async function buildRetentionCohorts(organizationId: string, currency: string): 
     ["Month", `MRR (${currency})`, "Active customers", "New customers", "Churned customers"],
     ...trend.map((point): CsvRow => [
       point.month,
-      money(point.mrrCents),
+      money(point.mrrCents, currency),
       point.activeCustomers,
       point.newCustomers,
       point.churnedCustomers,
     ]),
     [],
-    [`Live MRR by plan as of ${isoDate(planMix.asOf)} (${currency})`, money(planMix.totalMRRCents)],
+    [`Live MRR by plan as of ${isoDate(planMix.asOf)} (${currency})`, money(planMix.totalMRRCents, currency)],
     ["Plan", `MRR (${currency})`, "Subscriptions"],
-    ...planMix.byPlan.map((row): CsvRow => [row.name, money(row.mrrCents), row.subscriptions]),
+    ...planMix.byPlan.map((row): CsvRow => [
+      // A founder types plan names, so one could start with "=": neutralized
+      // like every other user-typed cell in an export (lib/csv.ts).
+      neutralizeFormula(row.name),
+      money(row.mrrCents, currency),
+      row.subscriptions,
+    ]),
   ];
 }
 

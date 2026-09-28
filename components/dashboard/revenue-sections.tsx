@@ -1,19 +1,16 @@
-import type { ReactNode } from "react";
 import Link from "next/link";
 import {
   ArrowLeftRight,
   Banknote,
   CalendarRange,
   ChartSpline,
-  ChevronLeft,
   ChevronRight,
-  CircleSlash,
   FileClock,
 } from "lucide-react";
 
 import type {
-  InvoiceListResult,
   InvoiceTotals,
+  RecentInvoice,
   MRRTrendPoint,
   MetricsSummary,
   RevenueMovementPoint,
@@ -27,14 +24,7 @@ import {
   formatMoneyCompact,
   formatMoneyMovement,
 } from "@/lib/format";
-import type { RangeKey } from "@/lib/period";
-import {
-  STATUS_FILTERS,
-  type StatusFilterKey,
-  encodeCursor,
-  encodeCursorStack,
-  statusFilterOption,
-} from "@/lib/invoice-filter";
+import { INVOICES_PATH } from "@/lib/invoice-list";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,7 +33,6 @@ import { CountUp } from "@/components/dashboard/count-up";
 import { EmptyState } from "@/components/dashboard/empty-state";
 import { InvoiceTable } from "@/components/dashboard/invoice-table";
 import { MetricTile } from "@/components/dashboard/metric-tile";
-import { NavChip } from "@/components/dashboard/nav-chip";
 import { MRRLineChart, type MRRLineDatum } from "@/components/dashboard/mrr-line-chart";
 import { RevenueBridgeChart } from "@/components/dashboard/revenue-bridge-chart";
 import {
@@ -73,27 +62,6 @@ import {
 /** Eyebrow used on every panel — small mono caps, the label voice of the product. */
 const EYEBROW =
   "font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase";
-
-const REVENUE_PATH = "/dashboard/revenue";
-
-/**
- * Every URL this page links to.
- *
- * `range` always travels, because the period scopes the tiles. `status` is
- * omitted at its default so a shared link stays readable. Cursors are passed
- * explicitly by each caller, which is what makes a filter change RESET paging
- * rather than silently carry a cursor into a different result set.
- */
-function revenueHref(
-  range: RangeKey,
-  status: StatusFilterKey,
-  cursors: readonly string[],
-): string {
-  const query = new URLSearchParams({ range });
-  if (status !== "all") query.set("status", status);
-  if (cursors.length > 0) query.set("cursors", encodeCursorStack(cursors));
-  return `${REVENUE_PATH}?${query.toString()}`;
-}
 
 // ---------------------------------------------------------------------------
 // The bridge — the page's thesis
@@ -673,143 +641,36 @@ export async function RevenueTiles({ summaryPromise, totalsPromise }: RevenueTil
 }
 
 // ---------------------------------------------------------------------------
-// Invoices
+// Invoices — the newest few; the full table lives on /dashboard/invoices
 // ---------------------------------------------------------------------------
 
-interface InvoiceLedgerProps {
-  invoicesPromise: Promise<InvoiceListResult>;
-  /** Carried into every link so a filter or page turn keeps the period. */
-  range: RangeKey;
-  status: StatusFilterKey;
-  /**
-   * The validated cursor stack for this render, oldest page first. Serializable
-   * on purpose: this element is passed as `children` to a client error boundary,
-   * so a href-building callback could not travel with it.
-   */
-  cursors: string[];
+interface LatestInvoicesProps {
+  invoicesPromise: Promise<RecentInvoice[]>;
   /** The workspace's reporting currency. */
   currency: string;
 }
 
-export async function InvoiceLedger({
-  invoicesPromise,
-  range,
-  status,
-  cursors,
-  currency,
-}: InvoiceLedgerProps) {
-  const { invoices, nextCursor } = await invoicesPromise;
-  const option = statusFilterOption(status);
-
-  const page = cursors.length + 1;
-  const firstHref = cursors.length > 1 ? revenueHref(range, status, []) : null;
-  const backHref =
-    cursors.length > 0 ? revenueHref(range, status, cursors.slice(0, -1)) : null;
-  const nextHref = nextCursor
-    ? revenueHref(range, status, [...cursors, encodeCursor(nextCursor)])
-    : null;
-
-  // Three different reasons a table can be empty, and only one of them is
-  // "this workspace has never billed anyone".
-  let empty: ReactNode = undefined;
-  if (invoices.length === 0 && cursors.length > 0) {
-    empty = (
-      <EmptyState
-        icon={CircleSlash}
-        title="This page is empty"
-        description="The list has changed since this link was made. Go back to the first page to pick it up again."
-        action={
-          <Button asChild className="h-11 px-4 sm:h-9">
-            <Link href={revenueHref(range, status, [])}>Back to the first page</Link>
-          </Button>
-        }
-        className="mx-4 mb-4 border-0 bg-transparent py-10"
-      />
-    );
-  } else if (invoices.length === 0 && status !== "all") {
-    empty = (
-      <EmptyState
-        icon={CircleSlash}
-        title={`No ${option.emptyNoun}`}
-        description="Nothing in this workspace matches the filter. Clear it to see every invoice."
-        action={
-          <Button asChild variant="outline" className="h-11 px-4 sm:h-9">
-            <Link href={revenueHref(range, "all", [])}>Show all invoices</Link>
-          </Button>
-        }
-        className="mx-4 mb-4 border-0 bg-transparent py-10"
-      />
-    );
-  }
-
-  const showPager = invoices.length > 0 || backHref !== null;
+/**
+ * The newest invoices, read-only, with a link to the invoices page — which owns
+ * searching, filtering, paging, recording and the row actions. One table of
+ * invoices in the product, not two that drift apart.
+ */
+export async function LatestInvoices({ invoicesPromise, currency }: LatestInvoicesProps) {
+  const invoices = await invoicesPromise;
 
   return (
     <Card className="h-full gap-0 py-0">
-      {/*
-        The filter row sits above everything it scopes and nothing else. The
-        period control in the page header governs the tiles; this governs the
-        table, and the line underneath says which.
-      */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-        <h2 className={EYEBROW}>Invoices</h2>
-        <div
-          role="group"
-          aria-label="Filter invoices by status"
-          className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-background p-0.5"
-        >
-          {STATUS_FILTERS.map((filter) => (
-            <NavChip
-              key={filter.key}
-              href={revenueHref(range, filter.key, [])}
-              active={filter.key === status}
-            >
-              {filter.label}
-            </NavChip>
-          ))}
-        </div>
+        <h2 className={EYEBROW}>Latest invoices</h2>
+        <Button asChild variant="outline" className="h-11 px-3 sm:h-8">
+          <Link href={INVOICES_PATH}>
+            View all invoices
+            <ChevronRight className="size-3.5" aria-hidden />
+          </Link>
+        </Button>
       </div>
 
-      <p className="border-b border-border px-4 py-2 text-[0.6875rem] text-muted-foreground text-balance">
-        Every invoice in this workspace, newest first. Not scoped to the period
-        above: an unpaid invoice stays outstanding until it is settled.
-      </p>
-
-      <InvoiceTable invoices={invoices} empty={empty} currency={currency} />
-
-      {showPager ? (
-        <div className="mt-auto flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-2.5">
-          <p className="font-mono text-[0.6875rem] text-muted-foreground tabular-nums">
-            Page {formatCount(page)}
-            <span aria-hidden className="px-1.5 text-muted-foreground/40">
-              ·
-            </span>
-            {formatCount(invoices.length)}{" "}
-            {invoices.length === 1 ? "invoice" : "invoices"}
-          </p>
-
-          <div className="flex items-center gap-0.5">
-            {firstHref ? <NavChip href={firstHref}>First</NavChip> : null}
-            {backHref ? (
-              <NavChip href={backHref} label="Previous page">
-                <ChevronLeft className="size-3.5" aria-hidden />
-                Back
-              </NavChip>
-            ) : null}
-            {nextHref ? (
-              <NavChip href={nextHref} label="Next page">
-                Next
-                <ChevronRight className="size-3.5" aria-hidden />
-              </NavChip>
-            ) : null}
-            {nextHref === null && invoices.length > 0 ? (
-              <span className="px-2 text-[0.6875rem] text-muted-foreground">
-                End of list
-              </span>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
+      <InvoiceTable invoices={invoices} currency={currency} />
     </Card>
   );
 }

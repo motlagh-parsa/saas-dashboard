@@ -46,6 +46,7 @@ import { z } from "zod";
 
 import { writeAudit } from "@/lib/audit-writer";
 import { requireSession } from "@/lib/auth";
+import { buildCsv, csvFilename } from "@/lib/csv";
 import { formatPersonName } from "@/lib/format";
 import { issueInvite } from "@/lib/invite-token";
 import { prisma } from "@/lib/prisma";
@@ -568,29 +569,13 @@ export async function resendInvite(
 // ---------------------------------------------------------------------------
 
 /**
- * Leading characters a spreadsheet treats as the start of a formula. Names are
- * user-controlled (registration, Profile, Add user), so a name like
- * `=HYPERLINK(...)` must arrive as text, not run on the admin's machine.
- * Prefixing an apostrophe is OWASP's recommended neutralisation.
- */
-const FORMULA_START = /^[=+\-@\t\r]/;
-
-/** One RFC 4180 field: formula-guarded, quotes doubled, always quoted. */
-function csvField(value: string): string {
-  const safe = FORMULA_START.test(value) ? `'${value}` : value;
-  return `"${safe.replace(/"/g, '""')}"`;
-}
-
-/**
  * Every member of the rendered workspace matching the table's current search,
  * in the table's current order — all pages, not just the one on screen — as CSV.
  *
  * OWNER and ADMIN only: the table itself is visible to members, but a one-click
  * file of every email address is an administrator's tool. The export is
- * recorded in the audit log for the same reason.
- *
- * The file starts with a UTF-8 byte-order mark so Excel reads accented names
- * correctly, and uses CRLF line endings, per RFC 4180.
+ * recorded in the audit log for the same reason. Encoding, BOM and the
+ * formula guard are lib/csv.ts, shared with every other export.
  */
 export async function exportUsersCSV(
   organizationId: string,
@@ -625,19 +610,16 @@ export async function exportUsersCSV(
     },
   });
 
-  const header = ["Name", "Email", "Role", "Status", "Joined"];
-  const lines = rows.map((row) =>
-    [
+  const csv = buildCsv(
+    ["Name", "Email", "Role", "Status", "Joined"],
+    rows.map((row) => [
       row.user.name ?? "",
       row.user.email,
       row.role,
       row.user.suspendedAt === null ? "Active" : "Suspended",
       row.createdAt.toISOString(),
-    ]
-      .map(csvField)
-      .join(","),
+    ]),
   );
-  const csv = `﻿${[header.map(csvField).join(","), ...lines].join("\r\n")}\r\n`;
 
   audit({
     organizationId: org.data,
@@ -648,11 +630,10 @@ export async function exportUsersCSV(
     metadata: { count: rows.length, query: query || null },
   });
 
-  const day = new Date().toISOString().slice(0, 10);
   return {
     status: "success",
     csv,
-    filename: `users-${caller.organization.slug}-${day}.csv`,
+    filename: csvFilename("users", caller.organization.slug),
     count: rows.length,
   };
 }

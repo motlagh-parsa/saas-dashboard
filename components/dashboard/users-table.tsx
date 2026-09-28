@@ -15,40 +15,27 @@
 // reached through plain links built by `usersHref`, the codebase's pattern for
 // URL state: shareable, back-button-correct, and prefetched.
 //
-// Bulk actions reuse the per-row Server Actions one user at a time. Each is its
-// own SERIALIZABLE transaction (lib/user-actions.ts); fired in parallel against
-// one workspace, Postgres would abort some of them as conflicting.
+// The generic parts (search, columns menu, selection, pager, export) are the
+// shared data table in components/data-table/; what stays here is what only the
+// Users table has — the avatar cell, role badges, and the suspend/delete bulk
+// actions with their account-reach rules.
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { Role } from "@prisma/client";
-import {
-  ArrowDown,
-  ArrowUp,
-  ChevronLeft,
-  ChevronRight,
-  Columns3,
-  Download,
-  Loader2,
-  SearchX,
-  Trash2,
-  Users,
-  X,
-} from "lucide-react";
+import { Loader2, SearchX, Trash2, Users } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { formatCount, formatEnumLabel, formatInitials } from "@/lib/format";
+import { pageSpan } from "@/lib/list-state";
 import { deleteUser, exportUsersCSV, suspendUser, unsuspendUser } from "@/lib/user-actions";
 import { IDLE_USER_ACTION, type UserActionState } from "@/lib/user-action-state";
 import {
   USER_SORTS,
-  pageWindow,
   totalPages,
   userSortHref,
   usersHref,
-  type SortDirection,
   type UserListState,
-  type UserSortKey,
 } from "@/lib/user-list";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -64,14 +51,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   Table,
   TableBody,
   TableCaption,
@@ -81,10 +60,26 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/dashboard/empty-state";
-import { NavChip } from "@/components/dashboard/nav-chip";
 import { UserRowActions } from "@/components/dashboard/user-row-actions";
-import { UsersSearch } from "@/components/dashboard/users-search";
-import { toast } from "@/components/dashboard/use-toast";
+import { runSequentially, toastBulkOutcome } from "@/components/data-table/bulk";
+import {
+  ColumnVisibilityMenu,
+  useColumnVisibility,
+  type OptionalColumn,
+} from "@/components/data-table/column-visibility";
+import { DataTablePager } from "@/components/data-table/data-table-pager";
+import { DataTableSearch } from "@/components/data-table/data-table-search";
+import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
+import { ExportButton } from "@/components/data-table/export-button";
+import {
+  RowCheckbox,
+  SelectAllCheckbox,
+  SelectionBar,
+  plural,
+  useRowSelection,
+} from "@/components/data-table/row-selection";
+import { SortableHead } from "@/components/data-table/sortable-head";
+import { CONTROL_HEIGHT, EYEBROW, TABLE_HEAD } from "@/components/data-table/styles";
 
 // ---------------------------------------------------------------------------
 // Types and constants
@@ -111,21 +106,14 @@ export interface UserTableRow {
   readonly canManageAccount: boolean;
 }
 
-type OptionalColumn = "email" | "role" | "joined" | "status";
+type OptionalUserColumn = "email" | "role" | "joined" | "status";
 
-const OPTIONAL_COLUMNS: readonly { readonly key: OptionalColumn; readonly label: string }[] = [
+const OPTIONAL_COLUMNS: readonly OptionalColumn<OptionalUserColumn>[] = [
   { key: "email", label: "Email" },
   { key: "role", label: "Role" },
   { key: "joined", label: "Joined" },
   { key: "status", label: "Status" },
 ];
-
-/** Eyebrow used on every panel — small mono caps, the label voice of the product. */
-const EYEBROW =
-  "font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase";
-
-const TABLE_HEAD =
-  "h-9 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase";
 
 /** Same rule as the Settings members table: only OWNER takes the brass. */
 const ROLE_CLASS: Record<Role, string> = {
@@ -136,12 +124,6 @@ const ROLE_CLASS: Record<Role, string> = {
 
 const ROLE_BADGE = "font-mono text-[0.625rem] font-medium tracking-[0.12em] uppercase";
 
-/** Touch first: 44px on a phone, tightened to the app's density on a pointer. */
-const CONTROL_HEIGHT = "h-11 sm:h-9";
-
-const CHECKBOX_CLASS =
-  "size-4 cursor-pointer rounded border-input accent-brand disabled:cursor-not-allowed disabled:opacity-40";
-
 type BulkKind = "suspend" | "unsuspend" | "delete";
 
 type RowAction = (previous: UserActionState, formData: FormData) => Promise<UserActionState>;
@@ -151,19 +133,6 @@ const BULK: Record<BulkKind, { readonly action: RowAction; readonly verb: string
   unsuspend: { action: unsuspendUser, verb: "unsuspended" },
   delete: { action: deleteUser, verb: "deleted" },
 };
-
-function plural(count: number, noun: string): string {
-  return `${formatCount(count)} ${count === 1 ? noun : `${noun}s`}`;
-}
-
-function ariaSort(
-  column: UserSortKey,
-  sort: UserSortKey,
-  dir: SortDirection,
-): "ascending" | "descending" | undefined {
-  if (column !== sort) return undefined;
-  return dir === "asc" ? "ascending" : "descending";
-}
 
 // ---------------------------------------------------------------------------
 // Table
@@ -195,45 +164,14 @@ export function UsersTable({
   const router = useRouter();
   const [refreshing, startRefresh] = React.useTransition();
 
-  // ---- column visibility -------------------------------------------------
-  const [hidden, setHidden] = React.useState<ReadonlySet<OptionalColumn>>(new Set());
-  const shows = (column: OptionalColumn): boolean => !hidden.has(column);
+  const columns = useColumnVisibility<OptionalUserColumn>();
+  const shows = columns.shows;
 
-  function toggleColumn(column: OptionalColumn, visible: boolean): void {
-    setHidden((previous) => {
-      const next = new Set(previous);
-      if (visible) next.delete(column);
-      else next.add(column);
-      return next;
-    });
-  }
-
-  // ---- selection -----------------------------------------------------------
-  // Tagged with the view it was made in: a different page, search, sort or page
-  // size is a different view, so the old selection simply stops applying — no
-  // effect needed to clear it. Pruning against `selectable` also drops rows that
-  // a bulk delete (or another tab) has removed.
-  const view = usersHref(state);
-  const [selection, setSelection] = React.useState<{
-    readonly view: string;
-    readonly ids: ReadonlySet<string>;
-  }>({ view, ids: new Set() });
-
-  const selectable = rows.filter((row) => row.canManageAccount);
-  const selected = selection.view === view ? selectable.filter((row) => selection.ids.has(row.id)) : [];
-  const allSelected = selectable.length > 0 && selected.length === selectable.length;
-  const someSelected = selected.length > 0 && !allSelected;
-
-  function setSelected(ids: Iterable<string>): void {
-    setSelection({ view, ids: new Set(ids) });
-  }
-
-  function toggleRow(id: string, checked: boolean): void {
-    const next = new Set(selected.map((row) => row.id));
-    if (checked) next.add(id);
-    else next.delete(id);
-    setSelected(next);
-  }
+  const selection = useRowSelection(
+    usersHref(state),
+    rows.filter((row) => row.canManageAccount),
+  );
+  const selected = selection.selected;
 
   // ---- bulk actions ----------------------------------------------------------
   const [running, setRunning] = React.useState<BulkKind | null>(null);
@@ -250,63 +188,27 @@ export function UsersTable({
     setRunning(kind);
 
     const { action, verb } = BULK[kind];
-    let done = 0;
-    const failures: string[] = [];
-    for (const target of targets) {
-      const formData = new FormData();
-      formData.set("organizationId", organizationId);
-      formData.set("userId", target.id);
-      try {
-        const result = await action(IDLE_USER_ACTION, formData);
-        if (result.status === "success") done += 1;
-        else failures.push(`${target.displayName}: ${result.message ?? "refused"}`);
-      } catch {
-        failures.push(`${target.displayName}: something went wrong`);
-      }
-    }
+    const outcome = await runSequentially(
+      targets,
+      (target) => {
+        const formData = new FormData();
+        formData.set("organizationId", organizationId);
+        formData.set("userId", target.id);
+        return action(IDLE_USER_ACTION, formData);
+      },
+      (target) => target.displayName,
+    );
 
     setRunning(null);
     setDeleteTargets(null);
-    setSelected([]);
+    selection.setSelected([]);
     startRefresh(() => router.refresh());
-
-    if (failures.length === 0) {
-      toast.success(`${plural(done, "user")} ${verb}`);
-    } else {
-      toast.error(`${formatCount(failures.length)} of ${formatCount(targets.length)} couldn't be ${verb}`, {
-        description: failures.slice(0, 3).join(" · "),
-      });
-    }
-  }
-
-  // ---- export ------------------------------------------------------------------
-  const [exporting, startExport] = React.useTransition();
-
-  function handleExport(): void {
-    if (exporting) return;
-    startExport(async () => {
-      const result = await exportUsersCSV(organizationId, state.query, state.sort, state.dir);
-      if (result.status === "error") {
-        toast.error("Couldn't export users", { description: result.message });
-        return;
-      }
-      const url = URL.createObjectURL(new Blob([result.csv], { type: "text/csv;charset=utf-8" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = result.filename;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      // Revoked on the next tick: the click has handed the URL to the download.
-      window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      toast.success(`Exported ${plural(result.count, "user")}`, { description: result.filename });
-    });
+    toastBulkOutcome(outcome, targets.length, "user", verb);
   }
 
   // ---- paging --------------------------------------------------------------------
   const lastPage = totalPages(matching, state.perPage);
-  const from = matching === 0 ? 0 : (state.page - 1) * state.perPage + 1;
-  const to = Math.min(state.page * state.perPage, matching);
+  const { from, to } = pageSpan(state.page, state.perPage, matching);
 
   const matchLabel = state.query
     ? `${formatCount(matching)} of ${formatCount(workspaceTotal)} match`
@@ -328,114 +230,68 @@ export function UsersTable({
         </CardAction>
       </CardHeader>
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        {/* Keyed by workspace: a switch refreshes this page in place, and the old
-            workspace's search text must not survive into the new one. */}
-        <UsersSearch key={organizationId} query={state.query} />
+      <DataTableToolbar
+        search={
+          // Keyed by workspace: a switch refreshes this page in place, and the old
+          // workspace's search text must not survive into the new one.
+          <DataTableSearch
+            key={organizationId}
+            query={state.query}
+            label="Search users by name or email"
+            placeholder="Search name or email…"
+          />
+        }
+      >
+        <ColumnVisibilityMenu fixedLabel="Name" columns={OPTIONAL_COLUMNS} visibility={columns} />
+        {canManageUsers ? (
+          <ExportButton
+            noun="user"
+            run={() => exportUsersCSV(organizationId, state.query, state.sort, state.dir)}
+          />
+        ) : null}
+      </DataTableToolbar>
 
-        <div className="ml-auto flex items-center gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button type="button" variant="outline" className={cn("px-3", CONTROL_HEIGHT)}>
-                <Columns3 aria-hidden />
-                Columns
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuLabel>Show columns</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {/* Name identifies the row, so it cannot be hidden. */}
-              <DropdownMenuCheckboxItem checked disabled>
-                Name
-              </DropdownMenuCheckboxItem>
-              {OPTIONAL_COLUMNS.map((column) => (
-                <DropdownMenuCheckboxItem
-                  key={column.key}
-                  checked={shows(column.key)}
-                  onCheckedChange={(checked) => toggleColumn(column.key, checked === true)}
-                  // Keep the menu open, so several columns can be toggled in one go.
-                  onSelect={(event) => event.preventDefault()}
-                >
-                  {column.label}
-                </DropdownMenuCheckboxItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          {canManageUsers ? (
+      {selected.length > 0 ? (
+        <SelectionBar
+          summary={`${plural(selected.length, "user")} selected`}
+          busy={busy}
+          onClear={() => selection.setSelected([])}
+        >
+          {toSuspend.length > 0 ? (
             <Button
               type="button"
               variant="outline"
-              onClick={handleExport}
-              aria-disabled={exporting ? "true" : undefined}
+              disabled={busy}
+              onClick={() => void runBulk("suspend", toSuspend)}
               className={cn("px-3", CONTROL_HEIGHT)}
             >
-              {exporting ? <Loader2 aria-hidden className="animate-spin" /> : <Download aria-hidden />}
-              {exporting ? "Exporting…" : "Export"}
+              {running === "suspend" ? <Loader2 aria-hidden className="animate-spin" /> : null}
+              Suspend{toUnsuspend.length > 0 ? ` ${formatCount(toSuspend.length)}` : ""}
             </Button>
           ) : null}
-        </div>
-      </div>
-
-      {/* Bulk bar — only while something is selected. */}
-      {selected.length > 0 ? (
-        <div
-          role="region"
-          aria-label="Bulk actions"
-          className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/50 px-4 py-2"
-        >
-          <span className="text-sm font-medium" aria-live="polite">
-            {plural(selected.length, "user")} selected
-          </span>
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            {toSuspend.length > 0 ? (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                onClick={() => void runBulk("suspend", toSuspend)}
-                className={cn("px-3", CONTROL_HEIGHT)}
-              >
-                {running === "suspend" ? <Loader2 aria-hidden className="animate-spin" /> : null}
-                Suspend{toUnsuspend.length > 0 ? ` ${formatCount(toSuspend.length)}` : ""}
-              </Button>
-            ) : null}
-            {toUnsuspend.length > 0 ? (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                onClick={() => void runBulk("unsuspend", toUnsuspend)}
-                className={cn("px-3", CONTROL_HEIGHT)}
-              >
-                {running === "unsuspend" ? <Loader2 aria-hidden className="animate-spin" /> : null}
-                Unsuspend{toSuspend.length > 0 ? ` ${formatCount(toUnsuspend.length)}` : ""}
-              </Button>
-            ) : null}
+          {toUnsuspend.length > 0 ? (
             <Button
               type="button"
-              variant="destructive"
+              variant="outline"
               disabled={busy}
-              onClick={() => setDeleteTargets(selected)}
+              onClick={() => void runBulk("unsuspend", toUnsuspend)}
               className={cn("px-3", CONTROL_HEIGHT)}
             >
-              <Trash2 aria-hidden />
-              Delete
+              {running === "unsuspend" ? <Loader2 aria-hidden className="animate-spin" /> : null}
+              Unsuspend{toSuspend.length > 0 ? ` ${formatCount(toUnsuspend.length)}` : ""}
             </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              disabled={busy}
-              onClick={() => setSelected([])}
-              aria-label="Clear selection"
-              className="size-11 sm:size-9"
-            >
-              <X aria-hidden />
-            </Button>
-          </div>
-        </div>
+          ) : null}
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={busy}
+            onClick={() => setDeleteTargets(selected)}
+            className={cn("px-3", CONTROL_HEIGHT)}
+          >
+            <Trash2 aria-hidden />
+            Delete
+          </Button>
+        </SelectionBar>
       ) : null}
 
       <BulkDeleteDialog
@@ -481,51 +337,29 @@ export function UsersTable({
             <TableRow className="border-border hover:bg-transparent">
               {canManageUsers ? (
                 <TableHead className="w-10 pl-4">
-                  <input
-                    type="checkbox"
-                    aria-label="Select all users on this page"
-                    className={CHECKBOX_CLASS}
-                    checked={allSelected}
-                    ref={(element) => {
-                      if (element) element.indeterminate = someSelected;
-                    }}
-                    disabled={selectable.length === 0 || busy}
-                    onChange={(event) =>
-                      setSelected(event.target.checked ? selectable.map((row) => row.id) : [])
-                    }
+                  <SelectAllCheckbox
+                    label="Select all users on this page"
+                    selection={selection}
+                    disabled={busy}
                   />
                 </TableHead>
               ) : null}
 
               {USER_SORTS.filter((option) => option.key === "name" || shows(option.key)).map(
-                (option) => {
-                  const active = option.key === state.sort;
-                  const Arrow = state.dir === "asc" ? ArrowUp : ArrowDown;
-                  return (
-                    <TableHead
-                      key={option.key}
-                      aria-sort={ariaSort(option.key, state.sort, state.dir)}
-                      className={cn(
-                        TABLE_HEAD,
-                        option.key === "name" && !canManageUsers && "pl-4",
-                        option.key === "email" && "hidden md:table-cell",
-                        option.key === "joined" && "hidden sm:table-cell",
-                      )}
-                    >
-                      <Link
-                        href={userSortHref(state, option)}
-                        scroll={false}
-                        className={cn(
-                          "inline-flex items-center gap-1 rounded-sm outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
-                          active && "text-foreground",
-                        )}
-                      >
-                        {option.key === "name" ? "User" : option.label}
-                        {active ? <Arrow aria-hidden className="size-3" /> : null}
-                      </Link>
-                    </TableHead>
-                  );
-                },
+                (option) => (
+                  <SortableHead
+                    key={option.key}
+                    label={option.key === "name" ? "User" : option.label}
+                    href={userSortHref(state, option)}
+                    active={option.key === state.sort}
+                    dir={state.dir}
+                    className={cn(
+                      option.key === "name" && !canManageUsers && "pl-4",
+                      option.key === "email" && "hidden md:table-cell",
+                      option.key === "joined" && "hidden sm:table-cell",
+                    )}
+                  />
+                ),
               )}
               {shows("status") ? <TableHead className={TABLE_HEAD}>Status</TableHead> : null}
               {canManageUsers ? (
@@ -538,7 +372,7 @@ export function UsersTable({
 
           <TableBody>
             {rows.map((row) => {
-              const isSelected = selected.some((entry) => entry.id === row.id);
+              const isSelected = selection.isSelected(row.id);
               return (
                 <TableRow
                   key={row.id}
@@ -547,9 +381,8 @@ export function UsersTable({
                 >
                   {canManageUsers ? (
                     <TableCell className="w-10 py-2.5 pl-4">
-                      <input
-                        type="checkbox"
-                        aria-label={`Select ${row.displayName}`}
+                      <RowCheckbox
+                        label={`Select ${row.displayName}`}
                         title={
                           row.canManageAccount
                             ? undefined
@@ -557,10 +390,9 @@ export function UsersTable({
                               ? "You can't select yourself"
                               : "Also in workspaces you don't manage"
                         }
-                        className={CHECKBOX_CLASS}
                         checked={isSelected}
                         disabled={!row.canManageAccount || busy}
-                        onChange={(event) => toggleRow(row.id, event.target.checked)}
+                        onChange={(checked) => selection.toggleRow(row.id, checked)}
                       />
                     </TableCell>
                   ) : null}
@@ -653,91 +485,17 @@ export function UsersTable({
       )}
 
       {matching > 0 ? (
-        <Pager state={state} lastPage={lastPage} from={from} to={to} matching={matching} />
+        <DataTablePager
+          page={state.page}
+          lastPage={lastPage}
+          from={from}
+          to={to}
+          matching={matching}
+          noun="user"
+          hrefFor={(page) => usersHref({ ...state, page })}
+        />
       ) : null}
     </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Pager
-// ---------------------------------------------------------------------------
-
-interface PagerProps {
-  state: UserListState;
-  lastPage: number;
-  from: number;
-  to: number;
-  matching: number;
-}
-
-const PAGER_EDGE =
-  "inline-flex h-11 items-center gap-1 rounded-md px-3 text-xs font-medium md:h-8";
-
-function Pager({ state, lastPage, from, to, matching }: PagerProps) {
-  const hrefFor = (page: number): string => usersHref({ ...state, page });
-  const onFirst = state.page <= 1;
-  const onLast = state.page >= lastPage;
-
-  return (
-    <nav
-      aria-label="Pagination"
-      className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3"
-    >
-      <p className="font-mono text-xs text-muted-foreground tabular-nums">
-        Showing {formatCount(from)}–{formatCount(to)} of {plural(matching, "user")}
-      </p>
-
-      {lastPage > 1 ? (
-        <div className="flex flex-wrap items-center gap-0.5">
-          {onFirst ? (
-            <span aria-disabled="true" className={cn(PAGER_EDGE, "text-muted-foreground/50")}>
-              <ChevronLeft aria-hidden className="size-3.5" />
-              Previous
-            </span>
-          ) : (
-            <NavChip href={hrefFor(state.page - 1)} label="Previous page">
-              <ChevronLeft aria-hidden className="size-3.5" />
-              Previous
-            </NavChip>
-          )}
-
-          {pageWindow(state.page, lastPage).map((entry, index) =>
-            entry === "gap" ? (
-              <span
-                key={`gap-${index}`}
-                aria-hidden
-                className="inline-flex h-11 w-6 items-center justify-center text-xs text-muted-foreground md:h-8"
-              >
-                …
-              </span>
-            ) : (
-              <NavChip
-                key={entry}
-                href={hrefFor(entry)}
-                active={entry === state.page}
-                label={entry === state.page ? `Page ${entry}, current page` : `Page ${entry}`}
-                className="min-w-9 justify-center px-2 font-mono tabular-nums"
-              >
-                {entry}
-              </NavChip>
-            ),
-          )}
-
-          {onLast ? (
-            <span aria-disabled="true" className={cn(PAGER_EDGE, "text-muted-foreground/50")}>
-              Next
-              <ChevronRight aria-hidden className="size-3.5" />
-            </span>
-          ) : (
-            <NavChip href={hrefFor(state.page + 1)} label="Next page">
-              Next
-              <ChevronRight aria-hidden className="size-3.5" />
-            </NavChip>
-          )}
-        </div>
-      ) : null}
-    </nav>
   );
 }
 

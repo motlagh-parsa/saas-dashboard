@@ -33,6 +33,7 @@
 import type { BillingInterval } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
+import { verifyBillingLifecycle } from "./verify-billing-ops";
 import {
   getChurnRateTrend,
   getCustomerActivity,
@@ -350,8 +351,9 @@ async function main(): Promise<void> {
     await verifySnapshotFormula(fixture.segments);
     await verifySql(fixture.organizationId, fixture.segments);
     created.push(await verifyRoundingInSql(stamp));
+    created.push(...(await verifyBillingLifecycle(check, stamp)));
   } finally {
-    // By id only: the two workspaces this run created, and their cascade.
+    // By id only: the workspaces this run created, and their cascade.
     if (created.length > 0) {
       await prisma.organization.deleteMany({ where: { id: { in: created } } });
     }

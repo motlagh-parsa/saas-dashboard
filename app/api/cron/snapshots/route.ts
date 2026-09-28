@@ -17,12 +17,13 @@
 //     MAX_CATCH_UP_DAYS. On a normal daily run that is exactly one day. A missed
 //     run is filled on the next one instead of leaving a hole — the trend SUMS
 //     new/churned subs across each month, so a missing day silently undercounts.
-//   - Upserts on `@@unique([organizationId, date])`, all in one transaction, so a
-//     retry after a failure rewrites the same rows rather than duplicating them.
-//   - Values come from `lib/snapshot-formula.ts`, the same function the sample
-//     data generator uses, so cron rows and generated rows sit on one series.
-//     It reads each workspace's full subscription history on every run — fine at
-//     today's scale, and the first thing to revisit when it is not.
+//   - Rewrites those days workspace by workspace through `recomputeSnapshots`
+//     (lib/snapshots.ts): delete-then-insert in one transaction per workspace,
+//     so a retry after a failure rewrites the same rows rather than duplicating
+//     them. Values come from `lib/snapshot-formula.ts`, the formula the sample
+//     data generator and every billing write also use, so all rows sit on one
+//     series. It reads each workspace's full subscription history on every run —
+//     fine at today's scale, and the first thing to revisit when it is not.
 import "server-only";
 
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -30,13 +31,8 @@ import { NextResponse } from "next/server";
 
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
-import {
-  DAY_MS,
-  computeDaySnapshot,
-  firstActiveAt,
-  utcDayStart,
-  type SnapshotSegment,
-} from "@/lib/snapshot-formula";
+import { DAY_MS, utcDayStart } from "@/lib/snapshot-formula";
+import { recomputeSnapshots } from "@/lib/snapshots";
 
 /** Upper bound on days written per call, so a long outage cannot become one huge transaction. */
 const MAX_CATCH_UP_DAYS = 31;
@@ -86,60 +82,23 @@ export async function GET(request: Request): Promise<NextResponse> {
     Math.min(yesterday.getTime(), Math.max(resumeFrom, earliestAllowed)),
   );
 
-  const days: Date[] = [];
-  for (let ms = firstDay.getTime(); ms <= yesterday.getTime(); ms += DAY_MS) {
-    days.push(new Date(ms));
+  const days = Math.round((yesterday.getTime() - firstDay.getTime()) / DAY_MS) + 1;
+
+  // One workspace at a time through lib/snapshots.ts: the same function every
+  // billing write calls, so a cron day and a recomputed day are the same rows.
+  // Each is its own transaction under that workspace's advisory lock, and each
+  // reads its workspace's FULL history ("new customer" means never active
+  // before, which only the whole history can answer).
+  const organizations = await prisma.organization.findMany({ select: { id: true } });
+  for (const org of organizations) {
+    await recomputeSnapshots(org.id, firstDay, { through: yesterday });
   }
-
-  // Each workspace's FULL subscription history: "new customer" means never
-  // active before, which only the whole history can answer. Segments that start
-  // after the last day written cannot affect it, so they are left out.
-  const [organizations, segments] = await Promise.all([
-    prisma.organization.findMany({ select: { id: true } }),
-    prisma.subscription.findMany({
-      where: { startedAt: { lt: today } },
-      select: {
-        id: true,
-        organizationId: true,
-        customerId: true,
-        amountCents: true,
-        quantity: true,
-        interval: true,
-        intervalCount: true,
-        startedAt: true,
-        endedAt: true,
-        canceledAt: true,
-      },
-    }),
-  ]);
-
-  const segmentsByOrg = new Map<string, SnapshotSegment[]>();
-  for (const segment of segments) {
-    const list = segmentsByOrg.get(segment.organizationId);
-    if (list === undefined) segmentsByOrg.set(segment.organizationId, [segment]);
-    else list.push(segment);
-  }
-
-  await prisma.$transaction(
-    organizations.flatMap((org) => {
-      const orgSegments = segmentsByOrg.get(org.id) ?? [];
-      const firstActive = firstActiveAt(orgSegments);
-      return days.map((day) => {
-        const metrics = computeDaySnapshot(orgSegments, day, firstActive);
-        return prisma.metricSnapshot.upsert({
-          where: { organizationId_date: { organizationId: org.id, date: day } },
-          create: { organizationId: org.id, date: day, ...metrics },
-          update: metrics,
-        });
-      });
-    }),
-  );
 
   const result: SnapshotJobResult = {
     processed: organizations.length,
     date: isoDay(yesterday),
     from: isoDay(firstDay),
-    days: days.length,
+    days,
   };
   return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
 }

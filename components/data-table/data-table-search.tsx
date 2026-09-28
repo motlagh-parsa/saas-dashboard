@@ -1,9 +1,9 @@
 "use client";
 
-// Search box for /dashboard/users. The filtering itself happens on the server:
-// this island only writes `?q=` into the URL, 300ms after the last keystroke,
-// and the page re-renders with the narrowed query. Sort and direction params
-// are carried through untouched.
+// Search box for a server-paged table. The filtering itself happens on the
+// server: this island only writes `?q=` into the URL, 300ms after the last
+// keystroke, and the page re-renders with the narrowed query. Every other param
+// (sort, filters, page size) is carried through untouched.
 //
 // `router.replace`, not `push`: every debounced keystroke would otherwise be a
 // history entry, and Back would step through "a", "ad", "ada".
@@ -12,17 +12,20 @@ import type { KeyboardEvent } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Loader2, Search } from "lucide-react";
 
-import { USER_QUERY_MAX } from "@/lib/user-list";
+import { LIST_QUERY_MAX } from "@/lib/list-state";
 import { Input } from "@/components/ui/input";
 
 const DEBOUNCE_MS = 300;
 
-interface UsersSearchProps {
+interface DataTableSearchProps {
   /** The `q` the server rendered with, already trimmed and capped. */
   query: string;
+  /** Accessible name, e.g. "Search users by name or email". */
+  label: string;
+  placeholder: string;
 }
 
-export function UsersSearch({ query }: UsersSearchProps) {
+export function DataTableSearch({ query, label, placeholder }: DataTableSearchProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -91,11 +94,11 @@ export function UsersSearch({ query }: UsersSearchProps) {
       />
       <Input
         type="search"
-        aria-label="Search users by name or email"
-        placeholder="Search name or email…"
+        aria-label={label}
+        placeholder={placeholder}
         autoComplete="off"
         spellCheck={false}
-        maxLength={USER_QUERY_MAX}
+        maxLength={LIST_QUERY_MAX}
         value={value}
         onChange={(event) => {
           setValue(event.target.value);

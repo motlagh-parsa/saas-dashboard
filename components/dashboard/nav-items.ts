@@ -3,8 +3,10 @@ import {
   Bell,
   FileText,
   LayoutDashboard,
+  Receipt,
   ScrollText,
   Settings,
+  Tags,
   TrendingUp,
   UserCog,
   Users,
@@ -27,6 +29,9 @@ export const primaryNav: NavItem[] = [
   { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
   { label: "Revenue", href: "/dashboard/revenue", icon: TrendingUp },
   { label: "Customers", href: "/dashboard/customers", icon: Users },
+  // The billing data behind every number: what is sold, and what was billed.
+  { label: "Plans", href: "/dashboard/plans", icon: Tags },
+  { label: "Invoices", href: "/dashboard/invoices", icon: Receipt },
   { label: "Retention", href: "/dashboard/retention", icon: Activity },
   { label: "Reports", href: "/dashboard/reports", icon: FileText },
 ];

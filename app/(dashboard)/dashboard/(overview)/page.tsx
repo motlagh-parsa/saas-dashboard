@@ -27,10 +27,12 @@ import {
   getRecentInvoices,
   resolvePeriod,
 } from "@/lib/metrics";
+import { getBillingPresence } from "@/lib/billing-presence";
 import { formatDay } from "@/lib/format";
 import { parseRange, periodFor, rangeOption } from "@/lib/period";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/dashboard/empty-state";
+import { NoBillingData } from "@/components/billing/no-billing-data";
 import { PeriodControl } from "@/components/dashboard/period-control";
 import { SectionBoundary } from "@/components/dashboard/section-boundary";
 import {
@@ -106,11 +108,34 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
     );
   }
 
-  // The header names the workspace the figures belong to.
-  const organization = await prisma.organization.findUniqueOrThrow({
-    where: { id: organizationId },
-    select: { name: true, currency: true },
-  });
+  // The header names the workspace the figures belong to; the role decides
+  // whether an empty workspace is offered the first steps.
+  const [membership, presence] = await Promise.all([
+    prisma.membership.findUniqueOrThrow({
+      where: { userId_organizationId: { userId: session.user.id, organizationId } },
+      select: { role: true, organization: { select: { name: true, currency: true } } },
+    }),
+    getBillingPresence(organizationId),
+  ]);
+  const organization = membership.organization;
+
+  // No subscriptions: every figure below would be zero. Say what is missing.
+  if (presence.subscriptions === 0) {
+    return (
+      <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <header className="rise">
+          <h1 className="font-heading text-xl font-semibold tracking-tight">Overview</h1>
+          <p className="mt-1 text-[0.8125rem] text-muted-foreground">{organization.name}</p>
+        </header>
+        <NoBillingData
+          shows="MRR, retention, customers and billing"
+          canWrite={membership.role !== "MEMBER"}
+          hasPlans={presence.plans > 0}
+          hasCustomers={presence.customers > 0}
+        />
+      </main>
+    );
+  }
 
   const summaryPromise = eager(getMetricsSummary(organizationId, period));
   const trendPromise = eager(getMRRTrend(organizationId, 12));

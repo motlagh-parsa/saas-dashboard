@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 import type { InvoiceStatus } from "@prisma/client";
 import { Receipt } from "lucide-react";
 
+import { customerHref } from "@/lib/customer-list";
 import type { RecentInvoice } from "@/lib/metrics";
 import { cn } from "@/lib/utils";
 import { formatDay, formatEnumLabel, formatMoneyExact } from "@/lib/format";
@@ -145,9 +147,12 @@ export function InvoiceTable({ invoices, currency, empty }: InvoiceTableProps) {
             <TableRow key={invoice.id} className="border-border">
               <TableCell className="py-2.5 pl-4">
                 <div className="flex min-w-0 flex-col leading-tight">
-                  <span className="truncate font-medium text-foreground">
+                  <Link
+                    href={customerHref(invoice.customer.id)}
+                    className="truncate font-medium text-foreground underline-offset-4 hover:underline focus-visible:underline"
+                  >
                     {invoice.customer.name}
-                  </span>
+                  </Link>
                   <span className="truncate text-xs text-muted-foreground">
                     {invoice.planName ?? "One-off charge"}
                   </span>

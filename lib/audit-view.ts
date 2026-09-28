@@ -22,11 +22,33 @@ export const AUDIT_ACTION_LABELS = {
   "workspace.renamed": "Renamed workspace",
   "workspace.left": "Left workspace",
   "subscription.created": "Added subscription",
+  "subscription.changed": "Changed plan",
+  "subscription.canceled": "Canceled subscription",
+  "subscription.cancel_undone": "Undid cancellation",
+  "subscription.corrected": "Corrected subscription",
+  "subscription.deleted": "Deleted subscription",
+  "customer.created": "Added customer",
+  "customer.updated": "Edited customer",
+  "customer.archived": "Archived customer",
+  "customer.unarchived": "Unarchived customer",
+  "customer.deleted": "Deleted customer",
+  "customer.exported": "Exported customers",
+  "plan.created": "Created plan",
+  "plan.updated": "Edited plan",
+  "plan.archived": "Archived plan",
+  "plan.unarchived": "Unarchived plan",
+  "plan.deleted": "Deleted plan",
+  "invoice.created": "Recorded invoice",
+  "invoice.paid": "Marked invoice paid",
+  "invoice.voided": "Voided invoice",
+  "invoice.uncollectible": "Marked uncollectible",
+  "invoice.deleted": "Deleted invoice",
+  "invoice.exported": "Exported invoices",
 } as const;
 
 export type AuditAction = keyof typeof AUDIT_ACTION_LABELS;
 
-export type AuditTargetType = "user" | "workspace" | "subscription";
+export type AuditTargetType = "user" | "workspace" | "subscription" | "customer" | "plan" | "invoice";
 
 function isAuditAction(value: string): value is AuditAction {
   return Object.hasOwn(AUDIT_ACTION_LABELS, value);
@@ -90,6 +112,10 @@ export function auditDetails(action: string, metadata: Prisma.JsonValue | null):
       return query ? `${rows}, matching “${query}”` : rows;
     }
     case "subscription.created": {
+      // Entries from this build carry a prepared `detail`; older ones are
+      // rebuilt from their structured fields below.
+      const detail = text(data, "detail");
+      if (detail) return detail;
       const plan = text(data, "plan");
       const interval = text(data, "interval");
       const intervalCount = integer(data, "intervalCount") ?? 1;
@@ -101,6 +127,11 @@ export function auditDetails(action: string, metadata: Prisma.JsonValue | null):
       return `${plan} · ${formatBillingInterval(interval, intervalCount)} · ${formatMoneyExact(amountCents, currency)}`;
     }
     default:
-      return EM_DASH;
+      // Billing entries (customer.*, plan.*, subscription.*, invoice.*) are
+      // written with a prepared one-line `detail` — "Growth → Pro from 01 Mar
+      // 2026", "Start 01 Jan → 15 Jan" — formatted once, in the workspace
+      // currency, when the change happened. Their structured before/after values
+      // sit beside it in the metadata.
+      return text(data, "detail") ?? EM_DASH;
   }
 }

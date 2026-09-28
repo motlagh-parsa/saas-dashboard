@@ -108,7 +108,7 @@ export async function HeadlinePanel({
           />
         </CardContent>
       ) : (
-        <CardContent>
+        <CardContent data-testid="overview-mrr">
           <CountUp
             value={mrrCents.current}
             format="money"

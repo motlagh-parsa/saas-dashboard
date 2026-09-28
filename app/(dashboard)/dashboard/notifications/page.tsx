@@ -39,7 +39,7 @@ export const metadata: Metadata = {
 // ---------------------------------------------------------------------------
 
 /**
- * URL state for the tabs. Same shape as `lib/invoice-filter.ts` — a fixed
+ * URL state for the tabs. Same shape as the table filters in `lib/invoice-list.ts` — a fixed
  * whitelist, a parser that falls back to the default on anything unrecognised,
  * and an option record that carries its own empty copy — kept local because
  * three static values do not need their own module.

@@ -12,7 +12,7 @@
  */
 import type { Role } from "@prisma/client";
 import type { ComponentType } from "react";
-import { Mail, Monitor, Moon, Sun, UserPlus, UserRound } from "lucide-react";
+import { CirclePlus, Mail, Monitor, Moon, ReceiptText, Sun, Tag, UserPlus, UserRound, Users } from "lucide-react";
 
 import { primaryNav, secondaryNav } from "@/components/dashboard/nav-items";
 import { THEME_LABELS, THEMES, type ThemePreference } from "@/lib/theme";
@@ -44,6 +44,14 @@ const MANAGER_ONLY_HREFS: ReadonlySet<string> = new Set(["/dashboard/audit"]);
 
 /** Where "Add user" lands: the Users page opens its Add user dialog for this param. */
 export const ADD_USER_HREF = "/dashboard/users?action=add";
+
+/** Billing quick actions — each page opens its dialog for its `?action=` param. */
+const BILLING_ACTIONS: readonly { id: string; label: string; href: string; icon: ComponentType<{ className?: string }> }[] = [
+  { id: "action-add-customer", label: "Add customer", href: "/dashboard/customers?action=add", icon: Users },
+  { id: "action-add-subscription", label: "Add subscription", href: "/dashboard/revenue?action=add-subscription", icon: CirclePlus },
+  { id: "action-create-plan", label: "Create plan", href: "/dashboard/plans?action=add", icon: Tag },
+  { id: "action-record-invoice", label: "Record invoice", href: "/dashboard/invoices?action=record", icon: ReceiptText },
+];
 
 const THEME_ICONS: Record<ThemePreference, ComponentType<{ className?: string }>> = {
   light: Sun,
@@ -87,6 +95,16 @@ export const PALETTE_ITEMS: readonly PaletteItem[] = [
     command: { kind: "navigate", href: ADD_USER_HREF },
     roles: MANAGERS,
   },
+  ...BILLING_ACTIONS.map(
+    (action): PaletteItem => ({
+      id: action.id,
+      group: "Actions",
+      label: action.label,
+      icon: action.icon,
+      command: { kind: "navigate", href: action.href },
+      roles: MANAGERS,
+    }),
+  ),
   ...THEMES.map(
     (theme): PaletteItem => ({
       id: `theme-${theme}`,

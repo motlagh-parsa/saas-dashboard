@@ -8,8 +8,8 @@
 //      workspace picked in the switcher, honoured only while the caller is a
 //      member of it, else their most privileged one.
 //   3. Every untrusted query param is narrowed before it reaches a query: the
-//      period through `parseRange`, the invoice status through a fixed whitelist,
-//      and the pagination cursor through a strict codec.
+//      period through `parseRange`; `?action=add-subscription` only ever opens
+//      the dialog, and only for an owner or admin.
 //   4. Every query is started at once and handed to a section as a promise, so
 //      the round trips overlap and each section streams into its own `<Suspense>`
 //      boundary rather than the page blocking on the slowest one.
@@ -23,28 +23,25 @@ import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
   getInvoiceTotals,
-  getInvoices,
   getMRRTrend,
   getMetricsSummary,
+  getRecentInvoices,
   getRevenueMovement,
   resolvePeriod,
 } from "@/lib/metrics";
+import { getCustomerOptions, getPlanOptions } from "@/lib/billing-pickers";
+import { getBillingPresence } from "@/lib/billing-presence";
 import { formatDay } from "@/lib/format";
 import { parseRange, periodFor } from "@/lib/period";
-import {
-  decodeCursor,
-  parseCursorStack,
-  parseStatusFilter,
-  statusFilterOption,
-} from "@/lib/invoice-filter";
 import { Button } from "@/components/ui/button";
-import { AddSubscriptionDialog } from "@/components/dashboard/add-subscription-dialog";
 import { EmptyState } from "@/components/dashboard/empty-state";
+import { NoBillingData } from "@/components/billing/no-billing-data";
+import { SubscriptionCreateDialog } from "@/components/billing/subscription-dialogs";
 import { PeriodControl } from "@/components/dashboard/period-control";
 import { SectionBoundary } from "@/components/dashboard/section-boundary";
 import {
   BridgePanel,
-  InvoiceLedger,
+  LatestInvoices,
   RevenueTiles,
   TrendPanel,
 } from "@/components/dashboard/revenue-sections";
@@ -63,8 +60,8 @@ export const metadata: Metadata = {
 /** Months of history in the bridge and the trend. Both windows, one number. */
 const HISTORY_MONTHS = 12;
 
-/** Rows per page in the invoice ledger. */
-const INVOICES_PER_PAGE = 12;
+/** Newest invoices shown here; the invoices page has the rest. */
+const LATEST_INVOICES = 8;
 
 interface RevenuePageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -91,14 +88,8 @@ export default async function RevenuePage({ searchParams }: RevenuePageProps) {
   const period = periodFor(range);
   const asOf = resolvePeriod(period).end;
 
-  const status = parseStatusFilter(params.status);
-  const statusOption = statusFilterOption(status);
-
-  // Forward-only keyset paging, with the history of pages already visited kept in
-  // the URL. Anything malformed collapses to page one rather than erroring.
-  const cursors = parseCursorStack(params.cursors);
-  const lastToken = cursors.length > 0 ? cursors[cursors.length - 1] : null;
-  const cursor = lastToken === null ? undefined : (decodeCursor(lastToken) ?? undefined);
+  // `?action=add-subscription` — where the palette and the empty states land.
+  const openAdd = params.action === "add-subscription";
 
   // Tenant resolution: the workspace picked in the switcher (verified against the
   // caller's memberships), else their most privileged one — lib/active-org.ts.
@@ -138,67 +129,67 @@ export default async function RevenuePage({ searchParams }: RevenuePageProps) {
 
   // What the Add subscription dialog offers: this workspace's own customers and
   // plans, archived ones excluded. Only fetched for someone who can use it.
-  const [customerOptions, planOptions] = canAddSubscription
-    ? await Promise.all([
-        prisma.customer.findMany({
-          where: { organizationId, archivedAt: null },
-          orderBy: { name: "asc" },
-          select: { id: true, name: true },
-        }),
-        prisma.plan.findMany({
-          where: { organizationId, archivedAt: null },
-          orderBy: [{ amountCents: "asc" }, { name: "asc" }],
-          select: { id: true, name: true, amountCents: true, interval: true, intervalCount: true },
-        }),
-      ])
-    : [[], []];
+  const [customerOptions, planOptions, presence] = await Promise.all([
+    canAddSubscription ? getCustomerOptions(organizationId) : Promise.resolve([]),
+    canAddSubscription ? getPlanOptions(organizationId) : Promise.resolve([]),
+    getBillingPresence(organizationId),
+  ]);
+
+  const addDialog = canAddSubscription ? (
+    <SubscriptionCreateDialog
+      // Keyed on the param, so arriving from a link while already here remounts it open.
+      key={openAdd ? "add" : "idle"}
+      organizationId={organizationId}
+      currency={organization.currency}
+      customers={customerOptions}
+      plans={planOptions}
+      openOnMount={openAdd}
+      tone={presence.subscriptions === 0 ? "primary" : "outline"}
+    />
+  ) : null;
+
+  const header = (
+    <header className="rise flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h1 className="font-heading text-xl font-semibold tracking-tight">Revenue</h1>
+        <p className="mt-1 text-[0.8125rem] text-muted-foreground">
+          {organization.name}
+          <span aria-hidden className="px-1.5 text-muted-foreground/40">
+            ·
+          </span>
+          figures through {formatDay(asOf)}
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {addDialog}
+        {presence.subscriptions > 0 ? <PeriodControl current={range} basePath="/dashboard/revenue" /> : null}
+      </div>
+    </header>
+  );
+
+  if (presence.subscriptions === 0) {
+    return (
+      <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        {header}
+        <NoBillingData
+          shows="the revenue bridge, the MRR trend and collections"
+          canWrite={canAddSubscription}
+          hasPlans={presence.plans > 0}
+          hasCustomers={presence.customers > 0}
+        />
+      </main>
+    );
+  }
 
   const summaryPromise = eager(getMetricsSummary(organizationId, period));
   const movementPromise = eager(getRevenueMovement(organizationId, HISTORY_MONTHS));
   const trendPromise = eager(getMRRTrend(organizationId, HISTORY_MONTHS));
   const totalsPromise = eager(getInvoiceTotals(organizationId, period));
-  const invoicesPromise = eager(
-    getInvoices(organizationId, {
-      limit: INVOICES_PER_PAGE,
-      statuses: statusOption.statuses,
-      cursor,
-    }),
-  );
+  const invoicesPromise = eager(getRecentInvoices(organizationId, LATEST_INVOICES));
 
   return (
     <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-      <header className="rise flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="font-heading text-xl font-semibold tracking-tight">Revenue</h1>
-          <p className="mt-1 text-[0.8125rem] text-muted-foreground">
-            {organization.name}
-            <span aria-hidden className="px-1.5 text-muted-foreground/40">
-              ·
-            </span>
-            figures through {formatDay(asOf)}
-          </p>
-        </div>
-        {/*
-          The period scopes the billing tiles. It carries the status filter with
-          it and deliberately drops the cursor stack: a new period is a new result
-          set, and a cursor from the old one would point at nothing.
-        */}
-        <div className="flex flex-wrap items-center gap-2">
-          {canAddSubscription ? (
-            <AddSubscriptionDialog
-              organizationId={organizationId}
-              currency={organization.currency}
-              customers={customerOptions}
-              plans={planOptions}
-            />
-          ) : null}
-          <PeriodControl
-            current={range}
-            basePath="/dashboard/revenue"
-            params={status === "all" ? undefined : { status }}
-          />
-        </div>
-      </header>
+      {header}
 
       {/*
         Hierarchy: the bridge is the thesis of this page, so it gets the width,
@@ -245,13 +236,7 @@ export default async function RevenuePage({ searchParams }: RevenuePageProps) {
           description="Billing history failed to fetch. Retry it — no invoice was affected, only this view."
         >
           <Suspense fallback={<InvoiceLedgerSkeleton />}>
-            <InvoiceLedger
-              invoicesPromise={invoicesPromise}
-              range={range}
-              status={status}
-              cursors={cursors}
-              currency={organization.currency}
-            />
+            <LatestInvoices invoicesPromise={invoicesPromise} currency={organization.currency} />
           </Suspense>
         </SectionBoundary>
       </div>

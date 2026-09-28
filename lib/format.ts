@@ -41,8 +41,36 @@ function safeCurrency(currency: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Money — input is always integer cents
+// Money — input is always integer MINOR units of the currency
 // ---------------------------------------------------------------------------
+//
+// "Cents" in parameter names is the codebase's word for minor units, but the
+// number of them per major unit is the CURRENCY's: 100 for USD and EUR, 1 for
+// JPY (which has no minor unit), 1000 for KWD. Every conversion goes through
+// `currencyFractionDigits`, never a hard-coded 100.
+
+const fractionDigitsCache = new Map<string, number>();
+
+/**
+ * How many decimals the currency's minor unit has — what Intl itself uses for it
+ * (`USD` 2, `JPY` 0, `KWD` 3). The one definition the money input parser
+ * (lib/money.ts) and every formatter below agree on.
+ */
+export function currencyFractionDigits(currency: string): number {
+  const code = safeCurrency(currency);
+  const hit = fractionDigitsCache.get(code);
+  if (hit !== undefined) return hit;
+  const digits =
+    new Intl.NumberFormat(LOCALE, { style: "currency", currency: code }).resolvedOptions()
+      .maximumFractionDigits ?? 2;
+  fractionDigitsCache.set(code, digits);
+  return digits;
+}
+
+/** Minor units -> a major-unit number for `Intl` to print. Display only, never stored. */
+function toMajor(minor: number, code: string): number {
+  return minor / 10 ** currencyFractionDigits(code);
+}
 
 /** Headline money: `$52,480`. Whole units, because dashboards are read, not audited. */
 export function formatMoney(cents: number, currency: string): string {
@@ -53,20 +81,32 @@ export function formatMoney(cents: number, currency: string): string {
       currency: code,
       maximumFractionDigits: 0,
     }),
-  ).format(cents / 100);
+  ).format(toMajor(cents, code));
 }
 
 /** Ledger money: `$1,299.00`. Used where the exact figure is the point (invoices). */
 export function formatMoneyExact(cents: number, currency: string): string {
   const code = safeCurrency(currency);
+  const digits = currencyFractionDigits(code);
   return cached(`exact:${code}`, () =>
     new Intl.NumberFormat(LOCALE, {
       style: "currency",
       currency: code,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
     }),
-  ).format(cents / 100);
+  ).format(toMajor(cents, code));
+}
+
+/**
+ * A price as a founder wrote it: `$49` when it is whole, `$49.99` when it is not.
+ * Never rounds — `formatMoney` would print a $49.99 plan as "$50".
+ */
+export function formatPrice(cents: number, currency: string): string {
+  const code = safeCurrency(currency);
+  return cents % 10 ** currencyFractionDigits(code) === 0
+    ? formatMoney(cents, code)
+    : formatMoneyExact(cents, code);
 }
 
 /** Axis money: `$52.5K`. Compact enough to sit in a tick without wrapping. */
@@ -79,7 +119,7 @@ export function formatMoneyCompact(cents: number, currency: string): string {
       notation: "compact",
       maximumFractionDigits: 1,
     }),
-  ).format(cents / 100);
+  ).format(toMajor(cents, code));
 }
 
 /**
@@ -384,6 +424,12 @@ export function formatBillingInterval(interval: "MONTH" | "YEAR", intervalCount:
 export function formatIntervalSuffix(interval: "MONTH" | "YEAR", intervalCount: number): string {
   const unit = interval === "MONTH" ? "mo" : "yr";
   return intervalCount === 1 ? unit : `${intervalCount} ${unit}`;
+}
+
+/** The period in words, for "$49 / month": `month`, `3 months`, `year`, `2 years`. */
+export function formatIntervalWords(interval: "MONTH" | "YEAR", intervalCount: number): string {
+  const unit = interval === "MONTH" ? "month" : "year";
+  return intervalCount === 1 ? unit : `${intervalCount} ${unit}s`;
 }
 
 /** `"PAST_DUE"` -> `"Past due"`. */

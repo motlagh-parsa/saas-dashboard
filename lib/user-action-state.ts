@@ -20,7 +20,5 @@ export interface ResendInviteState extends UserActionState {
 
 export const IDLE_RESEND_INVITE: ResendInviteState = { ...IDLE_USER_ACTION, token: null };
 
-/** `exportUsersCSV`'s result: the file's text and a name to save it under. */
-export type ExportUsersResult =
-  | { readonly status: "success"; readonly csv: string; readonly filename: string; readonly count: number }
-  | { readonly status: "error"; readonly message: string };
+/** `exportUsersCSV`'s result — the shared export shape (lib/csv.ts). */
+export type { CsvExportResult as ExportUsersResult } from "@/lib/csv";

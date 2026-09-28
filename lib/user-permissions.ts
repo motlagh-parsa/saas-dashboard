@@ -8,7 +8,7 @@ import type { Role } from "@prisma/client";
  * set. The page's answer is a courtesy; the action's is the check that counts.
  *
  * Type-only Prisma import, so this module is safe on either side of the
- * server/client boundary — the same reason `lib/invoice-filter.ts` can name an
+ * server/client boundary — the same reason `lib/invoice-list.ts` can name an
  * `InvoiceStatus`.
  *
  * The ladder:
