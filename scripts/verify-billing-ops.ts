@@ -31,7 +31,9 @@ import {
   undoScheduledCancelOp,
   type OpResult,
 } from "@/lib/billing-ops";
+import { formatMoneyExact } from "@/lib/format";
 import { getMetricsSummary } from "@/lib/metrics";
+import { minorToInput, parseMoneyInput } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { DAY_MS, computeDaySnapshot, firstActiveAt, utcDayStart, type SnapshotMetrics } from "@/lib/snapshot-formula";
 import { recomputeSnapshots } from "@/lib/snapshots";
@@ -127,7 +129,20 @@ async function liveFigures(organizationId: string) {
   return { mrr: summary.mrrCents.current, customers: summary.activeCustomers.current };
 }
 
+/** Money typed in major units becomes integer minor units of the workspace currency. */
+function verifyMoneyInput(check: Check): void {
+  console.log("\nlib/money.ts — money input in the workspace currency's minor units");
+  check("USD: 49.99 → 4999", parseMoneyInput("49.99", "USD"), 4999);
+  check("USD: 49.9 → 4990, 1,299.5 → 129950", [parseMoneyInput("49.9", "USD"), parseMoneyInput("1,299.5", "USD")], [4990, 129_950]);
+  check("USD: three decimals, a sign or letters are refused", [parseMoneyInput("1.999", "USD"), parseMoneyInput("-5", "USD"), parseMoneyInput("12a", "USD")], [null, null, null]);
+  check("JPY (0 decimals): 4999 → 4999, 49.9 refused", [parseMoneyInput("4999", "JPY"), parseMoneyInput("49.9", "JPY")], [4999, null]);
+  check("KWD (3 decimals): 1.234 → 1234", parseMoneyInput("1.234", "KWD"), 1234);
+  check("round trip: 4999 USD → \"49.99\", 4999 JPY → \"4999\"", [minorToInput(4999, "USD"), minorToInput(4999, "JPY")], ["49.99", "4999"]);
+  check("display follows the currency: ¥4,999 and $49.99", [formatMoneyExact(4999, "JPY"), formatMoneyExact(4999, "USD")], ["¥4,999", "$49.99"]);
+}
+
 export async function verifyBillingLifecycle(check: Check, stamp: string): Promise<string[]> {
+  verifyMoneyInput(check);
   console.log(`\nlib/billing-ops.ts + lib/snapshots.ts — a lifecycle entered by hand (T = ${T.toISOString().slice(0, 10)})`);
 
   const org = await prisma.organization.create({

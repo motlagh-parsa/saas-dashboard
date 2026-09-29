@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "verify:metrics": "ts-node -r ./scripts/ts-runtime.cjs scripts/verify-metrics.ts"
+    "verify:metrics": "ts-node -r ./scripts/ts-runtime.cjs scripts/verify-metrics.ts",
+    "snapshots:recompute": "ts-node -r ./scripts/ts-runtime.cjs scripts/recompute-snapshots.ts",
+    "e2e:billing": "node scripts/e2e-billing.mjs"
   },
   "prisma": {
     "seed": "ts-node -r ./scripts/ts-runtime.cjs prisma/seed.ts"

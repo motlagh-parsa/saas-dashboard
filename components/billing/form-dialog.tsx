@@ -233,7 +233,10 @@ function DialogForm({
       setClientErrors({});
       return;
     }
-    const result = schema.safeParse(draft);
+    // The hidden fields are part of what the server parses, so they are part of
+    // what is checked here — otherwise a schema that requires an id would fail
+    // on the client with no control to show the error on.
+    const result = schema.safeParse({ ...draft, ...hidden });
     if (result.success) {
       setClientErrors({});
       return; // let the form action run
@@ -266,12 +269,15 @@ function DialogForm({
 
       {children ? children(form) : null}
 
-      {/* Field errors the form has no control for (e.g. an id refused as stale). */}
-      {errors.form ? (
-        <p role="alert" className="text-xs text-destructive">
-          {errors.form}
-        </p>
-      ) : null}
+      {/* Errors on fields the form has no control for — a hidden id, or the form
+          as a whole — so no refusal is ever silent. */}
+      {["form", ...Object.keys(hidden)]
+        .filter((field) => errors[field])
+        .map((field) => (
+          <p key={field} role="alert" className="text-xs text-destructive">
+            {errors[field]}
+          </p>
+        ))}
 
       <DialogFooter>
         <DialogClose asChild>
