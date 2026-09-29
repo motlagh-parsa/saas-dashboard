@@ -158,7 +158,7 @@ export default async function CustomersPage({ searchParams }: CustomersPageProps
           }
           className="rise mt-3"
         />
-        <ImportSlot />
+        {canWrite ? <ImportSlot kind="customers" /> : null}
       </main>
     );
   }

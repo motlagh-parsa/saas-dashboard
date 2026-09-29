@@ -1,0 +1,9 @@
+id,Customer ID,Customer Description,Customer Email,Plan,Product,Quantity,Currency,Interval,Amount,Status,Created (UTC),Start (UTC),Canceled At (UTC),Ended At (UTC)
+sub_1PqA7xStripe01,cus_QkA01,Acme Analytics,billing@acme-stripe.example,price_1Starter,Starter,1,usd,month,2900,active,1736936591,1736936591,,
+sub_1PqA7xStripe02,cus_QkA02,Bluebird Labs,finance@bluebird-stripe.example,price_1Growth,Growth,3,usd,month,7900,active,1738569600,1738569600,,
+sub_1PqA7xStripe03,cus_QkA03,Cobalt Studio,hello@cobalt-stripe.example,price_1ProYearly,Pro (annual),1,usd,year,199000,active,1741625100,1741625100,,
+sub_1PqA7xStripe04,cus_QkA04,Driftwood Health,ops@driftwood-stripe.example,price_1Growth,Growth,1,usd,month,7900,canceled,1737374400,1737374400,1746178200,1747742400
+sub_1PqA7xStripe05,cus_QkA05,Evergreen Logistics,ap@evergreen-stripe.example,price_1Starter,Starter,2,usd,month,2900,past_due,1743465600,1743465600,,
+sub_1PqA7xStripe06,cus_QkA06,Foxglove Systems,billing@foxglove-stripe.example,price_1Growth,Growth,1,usd,month,7900,trialing,1749737400,1749737400,,
+sub_1PqA7xStripe07,cus_QkA01,Acme Analytics,billing@acme-stripe.example,price_1Growth,Growth,1,usd,month,7900,canceled,1730538000,1730538000,1736506800,1736506800
+sub_1PqA7xStripe08,cus_QkA07,Granite Payments,finance@granite-stripe.example,price_1ProYearly,Pro (annual),2,usd,year,199000,active,1751353200,1751353200,,

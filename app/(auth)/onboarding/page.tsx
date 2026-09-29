@@ -138,8 +138,8 @@ export default async function OnboardingPage() {
           </span>
         </LoadSampleDataButton>
 
-        {/* "Import a CSV" and "Connect via API" land here once they exist. */}
-        <ImportSlot />
+        {/* "Connect via API" lands beside it once it exists. */}
+        <ImportSlot variant="card" />
       </div>
 
       <p className="mt-6 text-sm">

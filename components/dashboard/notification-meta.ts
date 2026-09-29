@@ -13,6 +13,7 @@ import {
   Clock,
   Database,
   FileText,
+  FileUp,
   Receipt,
   TrendingDown,
   TrendingUp,
@@ -53,6 +54,7 @@ export const TYPE_META: Record<NotificationType, NotificationTypeMeta> = {
   MEMBER_JOINED: { icon: UserPlus, tone: "neutral" },
   REVENUE_DIP: { icon: TrendingDown, tone: "negative" },
   REPORT_READY: { icon: FileText, tone: "neutral" },
+  IMPORT_FINISHED: { icon: FileUp, tone: "neutral" },
   SYSTEM: { icon: Database, tone: "neutral" },
 };
 

@@ -25,6 +25,7 @@ export const AUDIT_ACTION_LABELS = {
   "workspace.left": "Left workspace",
   "sample_data.loaded": "Loaded sample data",
   "sample_data.removed": "Removed sample data",
+  "import.completed": "Imported CSV",
   "subscription.created": "Added subscription",
   "subscription.changed": "Changed plan",
   "subscription.canceled": "Canceled subscription",
@@ -52,7 +53,7 @@ export const AUDIT_ACTION_LABELS = {
 
 export type AuditAction = keyof typeof AUDIT_ACTION_LABELS;
 
-export type AuditTargetType = "user" | "workspace" | "subscription" | "customer" | "plan" | "invoice";
+export type AuditTargetType = "user" | "workspace" | "subscription" | "customer" | "plan" | "invoice" | "import";
 
 function isAuditAction(value: string): value is AuditAction {
   return Object.hasOwn(AUDIT_ACTION_LABELS, value);

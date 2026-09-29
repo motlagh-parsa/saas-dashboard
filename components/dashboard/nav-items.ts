@@ -1,7 +1,9 @@
+import type { Role } from "@prisma/client";
 import {
   Activity,
   Bell,
   FileText,
+  FileUp,
   LayoutDashboard,
   Receipt,
   ScrollText,
@@ -19,6 +21,8 @@ export type NavItem = {
   icon: ComponentType<{ className?: string }>;
   /** Optional trailing count, e.g. unread notifications. */
   count?: number;
+  /** Shown only to these roles in the active workspace. Absent = everyone. */
+  roles?: readonly Role[];
 };
 
 /** The one nav entry that carries a live count. Exported so the nav can find it. */
@@ -43,6 +47,9 @@ export const secondaryNav: NavItem[] = [
   // marked read, and would disagree with the bell two inches away.
   // UserCog, not Users: Customers above already wears Users, and two identical
   // glyphs in one rail make the icons useless for scanning.
+  // Owners and admins only: members cannot import (the page and every action
+  // refuse them too).
+  { label: "Import", href: "/dashboard/import", icon: FileUp, roles: ["OWNER", "ADMIN"] },
   { label: "Users", href: "/dashboard/users", icon: UserCog },
   { label: "Audit Log", href: "/dashboard/audit", icon: ScrollText },
   { label: "Notifications", href: NOTIFICATIONS_HREF, icon: Bell },

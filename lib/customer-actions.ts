@@ -24,7 +24,7 @@ import {
   setCustomerArchivedOp,
   updateCustomerOp,
 } from "@/lib/billing-ops";
-import { buildCsv, csvFilename, type CsvExportResult } from "@/lib/csv";
+import { buildCsv, csvFilename, type CsvExportResult } from "@/lib/csv/write";
 import { CUSTOMER_LIST, CUSTOMER_STATUS_LABEL, parseCustomerFilter } from "@/lib/customer-list";
 import { getCustomerExportRows } from "@/lib/customer-query";
 import { currencyFractionDigits } from "@/lib/format";

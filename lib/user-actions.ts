@@ -46,7 +46,7 @@ import { z } from "zod";
 
 import { writeAudit } from "@/lib/audit-writer";
 import { requireSession } from "@/lib/auth";
-import { buildCsv, csvFilename } from "@/lib/csv";
+import { buildCsv, csvFilename } from "@/lib/csv/write";
 import { formatPersonName } from "@/lib/format";
 import { issueInvite } from "@/lib/invite-token";
 import { prisma } from "@/lib/prisma";

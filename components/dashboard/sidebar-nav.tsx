@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import type { Role } from "@prisma/client";
+
 import { cn } from "@/lib/utils";
 import { NOTIFICATIONS_HREF, primaryNav, secondaryNav, type NavItem } from "./nav-items";
 
@@ -15,6 +17,8 @@ type SidebarNavProps = {
    * zero badge is a thing to read that says nothing.
    */
   unreadCount?: number;
+  /** The caller's role in the active workspace — hides entries meant for others. */
+  role?: Role | null;
 };
 
 function isActive(pathname: string, href: string): boolean {
@@ -65,7 +69,7 @@ function NavLink({
   );
 }
 
-export function SidebarNav({ onNavigate, unreadCount }: SidebarNavProps) {
+export function SidebarNav({ onNavigate, unreadCount, role = null }: SidebarNavProps) {
   const pathname = usePathname() ?? "/dashboard";
 
   /**
@@ -98,7 +102,9 @@ export function SidebarNav({ onNavigate, unreadCount }: SidebarNavProps) {
         <p className="px-3 pb-1.5 text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground/70 uppercase">
           Workspace
         </p>
-        {secondaryNav.map((item) => (
+        {secondaryNav
+          .filter((item) => item.roles === undefined || (role !== null && item.roles.includes(role)))
+          .map((item) => (
           <NavLink
             key={item.href}
             item={withCount(item)}

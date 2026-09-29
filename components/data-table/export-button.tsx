@@ -7,7 +7,7 @@ import * as React from "react";
 import { Download, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import type { CsvExportResult } from "@/lib/csv";
+import type { CsvExportResult } from "@/lib/csv/write";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/dashboard/use-toast";
 import { CONTROL_HEIGHT } from "@/components/data-table/styles";

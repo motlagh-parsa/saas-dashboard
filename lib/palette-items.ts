@@ -67,7 +67,7 @@ export const PALETTE_ITEMS: readonly PaletteItem[] = [
       label: item.label,
       icon: item.icon,
       command: { kind: "navigate", href: item.href },
-      roles: MANAGER_ONLY_HREFS.has(item.href) ? MANAGERS : undefined,
+      roles: item.roles ?? (MANAGER_ONLY_HREFS.has(item.href) ? MANAGERS : undefined),
     }),
   ),
   {

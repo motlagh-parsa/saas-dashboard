@@ -62,7 +62,7 @@ export function NoBillingData({ shows, canWrite, hasPlans, hasCustomers }: NoBil
         }
         className="rise mt-3"
       />
-      <ImportSlot />
+      {canWrite ? <ImportSlot /> : null}
     </>
   );
 }

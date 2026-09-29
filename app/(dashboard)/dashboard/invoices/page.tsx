@@ -155,7 +155,7 @@ export default async function InvoicesPage({ searchParams }: InvoicesPageProps) 
           }
           className="rise mt-3"
         />
-        <ImportSlot />
+        {canWrite ? <ImportSlot kind="invoices" /> : null}
       </main>
     );
   }

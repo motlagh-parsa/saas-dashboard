@@ -265,11 +265,21 @@ export async function launchBrowser({ port }) {
     );
   }
 
+  /** Sets a file input's file the way a user picking it would (DOM.setFileInputFiles). */
+  async function uploadFile(selector, path) {
+    const { root } = await send("DOM.getDocument", { depth: -1, pierce: true });
+    const { nodeId } = await send("DOM.querySelector", { nodeId: root.nodeId, selector });
+    if (!nodeId) throw new Error(`no file input matching ${selector}`);
+    await send("DOM.setFileInputFiles", { nodeId, files: [path] });
+    await sleep(300);
+  }
+
   async function closeDialog() {
     await key("Escape", "Escape", 27);
     await waitFor("dialog to close", `!window.__e2e.dialog()`);
   }
 
+  await send("DOM.enable");
   await send("Page.enable");
   await send("Runtime.enable");
   await send("Network.enable");
@@ -284,6 +294,7 @@ export async function launchBrowser({ port }) {
     typeText,
     setSession,
     submitDialog,
+    uploadFile,
     closeDialog,
     close() {
       ws.close();

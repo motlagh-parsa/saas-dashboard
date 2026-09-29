@@ -128,7 +128,7 @@ export default async function DashboardLayout({
           currencies={currencies}
           className="w-full md:hidden"
         />
-        <SidebarNav unreadCount={unreadCount} />
+        <SidebarNav unreadCount={unreadCount} role={activeRole} />
         {dataState ? (
           <MetricsStatus latestSnapshot={dataState.latestSnapshot} hasSubscriptions={dataState.hasSubscriptions} />
         ) : null}

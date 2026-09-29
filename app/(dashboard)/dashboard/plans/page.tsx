@@ -117,7 +117,7 @@ export default async function PlansPage({ searchParams }: PlansPageProps) {
             action={createDialog ?? undefined}
             className="rise mt-3"
           />
-          <ImportSlot />
+          {canWrite ? <ImportSlot kind="plans" /> : null}
         </>
       ) : (
         <section className="rise mt-3 [animation-delay:60ms]">
