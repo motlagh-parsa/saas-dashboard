@@ -9,7 +9,8 @@
     "lint": "eslint",
     "verify:metrics": "ts-node -r ./scripts/ts-runtime.cjs scripts/verify-metrics.ts",
     "snapshots:recompute": "ts-node -r ./scripts/ts-runtime.cjs scripts/recompute-snapshots.ts",
-    "e2e:billing": "node scripts/e2e-billing.mjs"
+    "e2e:billing": "node scripts/e2e-billing.mjs",
+    "e2e:onboarding": "node scripts/e2e-onboarding.mjs"
   },
   "prisma": {
     "seed": "ts-node -r ./scripts/ts-runtime.cjs prisma/seed.ts"

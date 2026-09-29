@@ -7,7 +7,14 @@
 // which is the check that counts. Fields are CONTROLLED because React resets
 // uncontrolled inputs after every form action — a server-side "Email already in
 // use" would otherwise wipe everything the user typed.
+//
+// Once the account exists, the form signs in with the credentials just typed
+// (NextAuth's client `signIn`, the sign-in form's own path) and continues to
+// /onboarding. Should that sign-in fail, it falls back to the sign-in page with
+// the "Account created" note rather than leaving the user on a stale form.
 import * as React from "react";
+import { useRouter } from "next/navigation";
+import { signIn } from "next-auth/react";
 import { TriangleAlert } from "lucide-react";
 
 import { registerUser } from "@/app/(auth)/register/actions";
@@ -18,6 +25,7 @@ import {
   registerSchema,
   type RegisterField,
   type RegisterFieldErrors,
+  type RegisterState,
 } from "@/lib/register-schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,8 +56,30 @@ const FIELDS: readonly FieldSpec[] = [
 ];
 
 export function RegisterForm() {
-  const [state, formAction, pending] = React.useActionState(registerUser, INITIAL_REGISTER_STATE);
+  const router = useRouter();
   const [values, setValues] = React.useState<RegisterValues>(EMPTY_VALUES);
+  const [state, formAction, pending] = React.useActionState(
+    async (previous: RegisterState, formData: FormData): Promise<RegisterState> => {
+      const result = await registerUser(previous, formData);
+      if (result.registered) {
+        const signedIn = await signIn("credentials", {
+          email: values.email.trim().toLowerCase(),
+          password: values.password,
+          redirect: false,
+        });
+        if (signedIn && !signedIn.error) {
+          router.push("/onboarding");
+          router.refresh();
+        } else {
+          router.push("/sign-in?registered=1");
+        }
+      }
+      return result;
+    },
+    INITIAL_REGISTER_STATE,
+  );
+  // Still true after the action returns, while the sign-in and the navigation run.
+  const busy = pending || state.registered;
   const [clientErrors, setClientErrors] = React.useState<RegisterFieldErrors>({});
 
   // The server's verdict wins for any field it spoke about; a field the user has
@@ -57,7 +87,7 @@ export function RegisterForm() {
   const errors: RegisterFieldErrors = { ...clientErrors, ...state.fieldErrors };
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>): void {
-    if (pending) {
+    if (busy) {
       event.preventDefault();
       return;
     }
@@ -117,7 +147,7 @@ export function RegisterForm() {
                     setClientErrors((previous) => ({ ...previous, [field]: undefined }));
                   }
                 }}
-                disabled={pending}
+                disabled={busy}
                 aria-invalid={error ? true : undefined}
                 aria-describedby={error ? errorId : undefined}
                 className="h-11"
@@ -133,10 +163,10 @@ export function RegisterForm() {
 
         <Button
           type="submit"
-          disabled={pending}
+          disabled={busy}
           className="mt-1 h-11 w-full bg-brand text-brand-foreground hover:bg-brand/90"
         >
-          {pending ? "Creating account…" : "Create account"}
+          {state.registered ? "Signing you in…" : pending ? "Creating account…" : "Create account"}
         </Button>
       </form>
     </div>

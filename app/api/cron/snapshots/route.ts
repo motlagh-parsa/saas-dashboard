@@ -1,29 +1,26 @@
-// Daily MetricSnapshot job. Call once a day (any time after UTC midnight) with
-// the `x-cron-secret` header; it writes the snapshot rows the MRR trend reads.
-//
-// Without this, nothing but the seed ever writes MetricSnapshot: the trend chart
-// froze on the seed date while live MRR (computed from Subscription) kept moving.
+// Daily MetricSnapshot job. Scheduled by vercel.json at 00:10 UTC; any other
+// scheduler works too — call it once a day with `Authorization: Bearer <secret>`.
 //
 // Security:
-//   - Not a user endpoint. No session; the caller proves itself with a shared
-//     secret, compared in constant time. No secret configured => every call is
-//     refused. Middleware only matches /dashboard, so it does not intercept this.
+//   - Not a user endpoint. No session; the caller proves itself with the shared
+//     secret CRON_SECRET, sent as a Bearer token — exactly what Vercel Cron sends
+//     when the variable is set on the project — and compared in constant time.
+//     No secret configured => every call is refused. Middleware only matches
+//     /dashboard and /onboarding, so it does not intercept this.
 //   - It reads and writes EVERY tenant — the one place that is correct — and
 //     accepts no input that could select or shape any of that data.
 //
-// What it writes:
-//   - One row per organization per UTC day, from the day after the latest stored
-//     snapshot through YESTERDAY (the last complete day), capped at
-//     MAX_CATCH_UP_DAYS. On a normal daily run that is exactly one day. A missed
-//     run is filled on the next one instead of leaving a hole — the trend SUMS
-//     new/churned subs across each month, so a missing day silently undercounts.
-//   - Rewrites those days workspace by workspace through `recomputeSnapshots`
-//     (lib/snapshots.ts): delete-then-insert in one transaction per workspace,
-//     so a retry after a failure rewrites the same rows rather than duplicating
-//     them. Values come from `lib/snapshot-formula.ts`, the formula the sample
-//     data generator and every billing write also use, so all rows sit on one
-//     series. It reads each workspace's full subscription history on every run —
-//     fine at today's scale, and the first thing to revisit when it is not.
+// What it does, per workspace with billing data (at least one subscription),
+// one workspace at a time:
+//   1. Settles stored statuses that contradict dates: a segment whose `endedAt`
+//      has passed but is not CANCELED (a cancellation or plan change scheduled
+//      for a day that has now arrived) is marked CANCELED.
+//   2. Writes the snapshot days it is missing: from the day after its latest
+//      snapshot — or its earliest subscription start, if it has none — through
+//      TODAY, with lib/snapshots.ts, the function every billing write also uses.
+//      A missed run is filled on the next one instead of leaving a hole.
+// A failure in one workspace is logged and skipped; the others still run. The
+// response is a JSON summary.
 import "server-only";
 
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -32,19 +29,32 @@ import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
 import { DAY_MS, utcDayStart } from "@/lib/snapshot-formula";
-import { recomputeSnapshots } from "@/lib/snapshots";
+import { recomputeSnapshots, settleEndedSegments } from "@/lib/snapshots";
 
-/** Upper bound on days written per call, so a long outage cannot become one huge transaction. */
-const MAX_CATCH_UP_DAYS = 31;
+/**
+ * Seconds this function may run. A normal day is one row per workspace; the
+ * headroom is for catching up after an outage or a new workspace's first run.
+ */
+export const maxDuration = 300;
+export const dynamic = "force-dynamic";
+
+interface CronFailure {
+  readonly organizationId: string;
+  readonly error: string;
+}
 
 interface SnapshotJobResult {
-  /** Organizations processed (one row each per day written). */
-  processed: number;
-  /** The last day written — always yesterday, UTC. */
-  date: string;
-  /** The first day written. Equal to `date` on a normal daily run. */
-  from: string;
-  days: number;
+  /** Workspaces with billing data, i.e. the ones the job looked at. */
+  readonly workspaces: number;
+  /** Of those, how many completed. */
+  readonly processed: number;
+  /** Snapshot rows written across all workspaces. */
+  readonly rowsWritten: number;
+  /** Subscription statuses corrected to CANCELED because their end had passed. */
+  readonly statusesFixed: number;
+  /** The last day written — today, UTC. */
+  readonly through: string;
+  readonly failures: readonly CronFailure[];
 }
 
 /**
@@ -52,8 +62,9 @@ interface SnapshotJobResult {
  * over equal-length buffers — `timingSafeEqual` throws on a length mismatch, and
  * an early length check would leak the secret's length.
  */
-function secretMatches(provided: string | null, expected: string): boolean {
-  if (provided === null) return false;
+function bearerMatches(header: string | null, expected: string): boolean {
+  if (header === null || !header.startsWith("Bearer ")) return false;
+  const provided = header.slice("Bearer ".length);
   const a = createHash("sha256").update(provided).digest();
   const b = createHash("sha256").update(expected).digest();
   return timingSafeEqual(a, b);
@@ -65,40 +76,60 @@ function isoDay(day: Date): string {
 
 export async function GET(request: Request): Promise<NextResponse> {
   const expected = env.CRON_SECRET;
-  if (expected === undefined || !secretMatches(request.headers.get("x-cron-secret"), expected)) {
+  if (expected === undefined || !bearerMatches(request.headers.get("authorization"), expected)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const today = utcDayStart(new Date());
-  const yesterday = new Date(today.getTime() - DAY_MS);
+  const now = new Date();
+  const today = utcDayStart(now);
 
-  // Resume after the latest stored day; never before the cap; never after
-  // yesterday (a second run on the same day just rewrites yesterday).
-  const latest = await prisma.metricSnapshot.aggregate({ _max: { date: true } });
-  const earliestAllowed = yesterday.getTime() - (MAX_CATCH_UP_DAYS - 1) * DAY_MS;
-  const resumeFrom =
-    latest._max.date === null ? yesterday.getTime() : latest._max.date.getTime() + DAY_MS;
-  const firstDay = new Date(
-    Math.min(yesterday.getTime(), Math.max(resumeFrom, earliestAllowed)),
-  );
+  // Only workspaces that have something to measure. Each one's latest snapshot
+  // and earliest subscription decide where its catch-up starts.
+  const workspaces = await prisma.organization.findMany({
+    where: { subscriptions: { some: {} } },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+  });
 
-  const days = Math.round((yesterday.getTime() - firstDay.getTime()) / DAY_MS) + 1;
+  let processed = 0;
+  let rowsWritten = 0;
+  let statusesFixed = 0;
+  const failures: CronFailure[] = [];
 
-  // One workspace at a time through lib/snapshots.ts: the same function every
-  // billing write calls, so a cron day and a recomputed day are the same rows.
-  // Each is its own transaction under that workspace's advisory lock, and each
-  // reads its workspace's FULL history ("new customer" means never active
-  // before, which only the whole history can answer).
-  const organizations = await prisma.organization.findMany({ select: { id: true } });
-  for (const org of organizations) {
-    await recomputeSnapshots(org.id, firstDay, { through: yesterday });
+  for (const workspace of workspaces) {
+    try {
+      statusesFixed += await settleEndedSegments(prisma, workspace.id, now);
+
+      const [latest, earliest] = await Promise.all([
+        prisma.metricSnapshot.aggregate({ where: { organizationId: workspace.id }, _max: { date: true } }),
+        prisma.subscription.findFirst({
+          where: { organizationId: workspace.id },
+          orderBy: { startedAt: "asc" },
+          select: { startedAt: true },
+        }),
+      ]);
+      const latestDay = latest._max.date;
+      const from =
+        latestDay !== null ? new Date(latestDay.getTime() + DAY_MS) : utcDayStart(earliest?.startedAt ?? today);
+
+      // Already current (a billing write recomputed through today): nothing to write.
+      const result = await recomputeSnapshots(workspace.id, from, { through: today });
+      rowsWritten += result.days;
+      processed += 1;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[cron:snapshots] workspace failed", { organizationId: workspace.id, error });
+      failures.push({ organizationId: workspace.id, error: message.slice(0, 300) });
+    }
   }
 
   const result: SnapshotJobResult = {
-    processed: organizations.length,
-    date: isoDay(yesterday),
-    from: isoDay(firstDay),
-    days,
+    workspaces: workspaces.length,
+    processed,
+    rowsWritten,
+    statusesFixed,
+    through: isoDay(today),
+    failures,
   };
   return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
 }

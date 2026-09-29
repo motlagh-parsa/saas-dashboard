@@ -119,3 +119,64 @@ export async function recomputeSnapshots(
     { timeout: 120_000, maxWait: 30_000 },
   );
 }
+
+/**
+ * Compares the stored rows from `fromDate` through today with a from-scratch
+ * computation of the whole history, without writing anything. Returns one line
+ * per day that differs (a missing row counts). For repair tooling and tests.
+ */
+export async function diffAgainstRebuild(
+  organizationId: string,
+  fromDate: Date,
+  options: { readonly through?: Date } = {},
+): Promise<string[]> {
+  const from = utcDayStart(fromDate);
+  const through = utcDayStart(options.through ?? new Date());
+  const [history, stored] = await Promise.all([
+    prisma.subscription.findMany({
+      where: { organizationId, startedAt: { lte: through } },
+      select: {
+        id: true,
+        customerId: true,
+        amountCents: true,
+        quantity: true,
+        interval: true,
+        intervalCount: true,
+        startedAt: true,
+        endedAt: true,
+        canceledAt: true,
+      },
+    }),
+    prisma.metricSnapshot.findMany({
+      where: { organizationId, date: { gte: from, lte: through } },
+      select: {
+        date: true,
+        mrrCents: true,
+        activeSubs: true,
+        newSubs: true,
+        churnedSubs: true,
+        activeCustomers: true,
+        newCustomers: true,
+        churnedCustomers: true,
+      },
+    }),
+  ]);
+  const byDay = new Map(stored.map((row) => [row.date.getTime(), row]));
+  const firstActive = firstActiveAt(history);
+  const mismatches: string[] = [];
+  for (let ms = from.getTime(); ms <= through.getTime(); ms += DAY_MS) {
+    const day = new Date(ms);
+    const expected = computeDaySnapshot(history, day, firstActive);
+    const row = byDay.get(ms);
+    if (row === undefined) {
+      mismatches.push(`${day.toISOString().slice(0, 10)}: missing`);
+      continue;
+    }
+    const { date: _date, ...actual } = row;
+    void _date;
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      mismatches.push(`${day.toISOString().slice(0, 10)}: ${JSON.stringify(actual)} ≠ ${JSON.stringify(expected)}`);
+    }
+  }
+  return mismatches;
+}

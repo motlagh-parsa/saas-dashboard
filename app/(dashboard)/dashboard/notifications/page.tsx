@@ -163,13 +163,13 @@ export default async function NotificationsPage({
         <EmptyState
           icon={Building2}
           title="You are not in a workspace yet"
-          description="Notifications are scoped to a workspace. Ask an owner to add you to theirs, or create one to start tracking revenue."
+          description="Notifications are scoped to a workspace. Create one to get started, or ask an owner to invite you to theirs."
           action={
             <Button
               asChild
               className="h-11 bg-brand px-4 text-brand-foreground hover:bg-brand/90 sm:h-9"
             >
-              <Link href="/dashboard/settings">Open workspace settings</Link>
+              <Link href="/onboarding">Create workspace</Link>
             </Button>
           }
           className="rise mt-2"

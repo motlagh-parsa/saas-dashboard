@@ -49,7 +49,7 @@ export function NoBillingData({ shows, canWrite, hasPlans, hasCustomers }: NoBil
               </Button>
               {hasPlans ? null : (
                 <Button asChild variant="outline" className={secondary}>
-                  <Link href={`${PLANS_PATH}?action=add`}>Create a plan</Link>
+                  <Link href={`${PLANS_PATH}?action=create`}>Create a plan</Link>
                 </Button>
               )}
               {hasCustomers ? null : (

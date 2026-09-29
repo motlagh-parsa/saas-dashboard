@@ -54,9 +54,11 @@ export interface RegisterState {
   /** A form-level message (e.g. "Email already in use"), or null. */
   readonly error: string | null;
   readonly fieldErrors: RegisterFieldErrors;
+  /** The account exists: the form signs the user in and continues to /onboarding. */
+  readonly registered: boolean;
 }
 
-export const INITIAL_REGISTER_STATE: RegisterState = { error: null, fieldErrors: {} };
+export const INITIAL_REGISTER_STATE: RegisterState = { error: null, fieldErrors: {}, registered: false };
 
 /** The first message for each field, from a failed parse of `registerSchema`. */
 export function registerFieldErrors(

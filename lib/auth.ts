@@ -49,7 +49,8 @@ providers.push(
       password: { label: "Password", type: "password" },
     },
     // Two ways in, tried in order:
-    //   1. The env-configured demo account (unchanged).
+    //   1. The env-configured demo account — only when DEMO_PASSWORD is set;
+    //      without it there is no demo sign-in at all.
     //   2. A user who registered at /register: looked up by email, password
     //      checked against their stored scrypt hash. Users without a hash
     //      (GitHub-only accounts) can never match here.
@@ -66,7 +67,7 @@ providers.push(
 
       // 1. Demo account — constant-shape comparison against the env credentials.
       const isDemoEmail = email === env.DEMO_EMAIL.trim().toLowerCase();
-      if (isDemoEmail && password === env.DEMO_PASSWORD) {
+      if (env.DEMO_PASSWORD !== undefined && isDemoEmail && password === env.DEMO_PASSWORD) {
         // Resolve to a REAL database user so the demo session carries a valid id
         // with memberships/orgs (prisma/seed.ts upserts the same email). Upsert
         // keeps login working even before the seed has been run.

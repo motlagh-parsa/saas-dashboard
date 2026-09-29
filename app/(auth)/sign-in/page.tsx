@@ -46,7 +46,7 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
           className="mt-6 flex items-start gap-2 rounded-md border border-positive/25 bg-positive/10 px-3 py-2.5 text-sm text-positive"
         >
           <CircleCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <span>Account created. Sign in to open your workspace.</span>
+          <span>Account created. Sign in to set up your workspace.</span>
         </p>
       ) : null}
 

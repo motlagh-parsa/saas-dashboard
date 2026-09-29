@@ -7,8 +7,9 @@
 //   2. The organization is resolved SERVER-SIDE by lib/active-org.ts: the
 //      workspace picked in the switcher, honoured only while the caller is a
 //      member of it, else their most privileged one.
-//   3. The member list and the live-subscription count (which decides the Delete
-//      workspace lock reason) are scoped to that resolved id, and run together.
+//   3. The member list and what the workspace holds (lib/workspace-status.ts —
+//      which decides whether the currency can change and which sample-data
+//      control to offer) are scoped to that resolved id, and run together.
 //
 // Two round trips, with no `<Suspense>` anywhere. That is deliberate and it is
 // the opposite of what the overview/revenue/retention pages do: those fire
@@ -18,20 +19,24 @@
 // that chain across boundaries would buy no latency and cost a layout that
 // assembles itself in front of the reader for no reason.
 //
-// Writes. Two controls are live, both Server Actions in `lib/workspace-actions.ts`
-// driven by small client islands:
-//   - Workspace name — `WorkspaceDetailsForm` -> `renameWorkspace` (OWNER/ADMIN).
-//   - Leave workspace — `LeaveWorkspaceControl` -> `leaveWorkspace`, two-step,
-//     refused for the last owner.
-// "Invite member" is honestly unavailable (no invitation model or email
-// delivery), and "Delete workspace" stays locked.
+// Writes — Server Actions driven by small client islands, each re-checking the
+// caller's role on the server:
+//   - Workspace name — `renameWorkspace` (OWNER/ADMIN).
+//   - Reporting currency — `updateWorkspaceCurrency` (OWNER/ADMIN), only while
+//     the workspace has no billing data.
+//   - Sample data — load / remove (lib/sample-data-actions.ts, OWNER/ADMIN).
+//   - Invite member — a link to the Users page's Add user dialog (OWNER/ADMIN).
+//   - Leave workspace — two-step, refused for the last owner.
+//   - Delete workspace — OWNER only, typed-name confirmation.
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { Role } from "@prisma/client";
-import { Building2, Lock, UserPlus, Users } from "lucide-react";
+import { Building2, UserPlus, Users } from "lucide-react";
 
 import { getActiveOrgId } from "@/lib/active-org";
 import { requireSession } from "@/lib/auth";
+import { currencyOptions } from "@/lib/currencies";
+import { getWorkspaceDataState } from "@/lib/workspace-status";
 import { prisma } from "@/lib/prisma";
 import {
   formatCount,
@@ -57,6 +62,12 @@ import { EmptyState } from "@/components/dashboard/empty-state";
 import { LeaveWorkspaceControl } from "@/components/dashboard/leave-workspace-control";
 import { SettingsTabs } from "@/components/dashboard/settings-tabs";
 import { WorkspaceDetailsForm } from "@/components/dashboard/workspace-details-form";
+import { DeleteWorkspaceDialog } from "@/components/workspace/delete-workspace-dialog";
+import {
+  LoadSampleDataButton,
+  RemoveSampleDataDialog,
+} from "@/components/workspace/sample-data-controls";
+import { WorkspaceCurrencyForm } from "@/components/workspace/workspace-currency-form";
 
 export const metadata: Metadata = {
   title: "Settings",
@@ -100,51 +111,8 @@ const ROLE_BADGE =
 const TABLE_HEAD =
   "h-9 font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase";
 
-interface DangerAction {
-  id: string;
-  title: string;
-  description: string;
-  label: string;
-  /** Rendered as a mono tag beside the button, saying WHY it cannot be pressed. */
-  lockNote: string | null;
-  disabled: boolean;
-}
-
-const DELETE_CONSEQUENCE =
-  "Permanently deletes this workspace and all its data. This cannot be undone.";
-
-/**
- * The destructive actions, in ascending order of consequence.
- *
- * Leaving is reversible by someone else; deleting is reversible by nobody. The
- * second one is locked either way — deletion is not self-serve — and a disabled
- * control with no stated reason reads as a bug, so the reason ships beside it.
- * The reason has to be TRUE for this workspace: "locked while billing is active"
- * is only said when a subscription is actually live.
- */
-function dangerActions(hasLiveBilling: boolean): readonly DangerAction[] {
-  return [
-    {
-      id: "leave-workspace",
-      title: "Leave workspace",
-      description:
-        "You'll lose access to this workspace's data. An owner can re-invite you.",
-      label: "Leave workspace",
-      lockNote: null,
-      disabled: false,
-    },
-    {
-      id: "delete-workspace",
-      title: "Delete workspace",
-      description: hasLiveBilling
-        ? `${DELETE_CONSEQUENCE} Deletion stays locked while billing is active — contact support to release it.`
-        : `${DELETE_CONSEQUENCE} No active billing. Contact support to delete your workspace.`,
-      label: "Delete workspace",
-      lockNote: "Locked",
-      disabled: true,
-    },
-  ];
-}
+const FIELD_LABEL =
+  "font-mono text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground uppercase";
 
 export default async function SettingsPage() {
   const session = await requireSession();
@@ -164,7 +132,7 @@ export default async function SettingsPage() {
           select: {
             organizationId: true,
             role: true,
-            organization: { select: { name: true, slug: true } },
+            organization: { select: { name: true, slug: true, currency: true } },
           },
         });
 
@@ -176,13 +144,13 @@ export default async function SettingsPage() {
         <EmptyState
           icon={Building2}
           title="You are not in a workspace yet"
-          description="Settings is scoped to a workspace. Ask an owner to add you to theirs, or create one to start tracking revenue."
+          description="Settings is scoped to a workspace. Create one to get started, or ask an owner to invite you to theirs."
           action={
             <Button
               asChild
               className="h-11 bg-brand px-4 text-brand-foreground hover:bg-brand/90 sm:h-9"
             >
-              <Link href="/dashboard">Back to overview</Link>
+              <Link href="/onboarding">Create workspace</Link>
             </Button>
           }
           className="rise mt-2"
@@ -193,9 +161,7 @@ export default async function SettingsPage() {
 
   const organization = membership.organization;
 
-  const now = new Date();
-
-  const [members, liveSubscriptionCount] = await Promise.all([
+  const [members, dataState] = await Promise.all([
     // Same ordering trick as above: OWNER, then ADMIN, then MEMBER, alphabetical
     // inside each. The list reads as a hierarchy without needing a group header.
     prisma.membership.findMany({
@@ -205,22 +171,12 @@ export default async function SettingsPage() {
         user: { select: { id: true, name: true, email: true, image: true } },
       },
     }),
-    // "Billing is active" = a subscription is LIVE now, decided by dates, not
-    // `status` — the rule lib/metrics.ts sets. The seed stamps CANCELED on every
-    // ended segment, and a status list would also have to remember that PAST_DUE
-    // is still billing (and still owed). Served by the
-    // `[organizationId, startedAt, endedAt]` index.
-    prisma.subscription.count({
-      where: {
-        organizationId: membership.organizationId,
-        startedAt: { lte: now },
-        OR: [{ endedAt: null }, { endedAt: { gt: now } }],
-      },
-    }),
+    getWorkspaceDataState(membership.organizationId),
   ]);
 
   const memberCount = members.length;
-  const actions = dangerActions(liveSubscriptionCount > 0);
+  const canManage = membership.role !== "MEMBER";
+  const isOwner = membership.role === "OWNER";
 
   return (
     <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -291,8 +247,43 @@ export default async function SettingsPage() {
             organizationId={membership.organizationId}
             name={organization.name}
             slug={organization.slug}
-            canEdit={membership.role !== "MEMBER"}
+            canEdit={canManage}
           />
+
+          <CardContent className="grid gap-4 border-t border-border pt-4 sm:grid-cols-2">
+            <WorkspaceCurrencyForm
+              key={membership.organizationId}
+              organizationId={membership.organizationId}
+              currency={organization.currency}
+              currencies={currencyOptions()}
+              editable={!dataState.hasBillingData}
+              canEdit={canManage}
+            />
+
+            <div className="flex flex-col gap-1.5" data-testid="sample-data-row">
+              <span className={FIELD_LABEL}>Sample data</span>
+              {dataState.hasSampleData ? (
+                <>
+                  <p className="text-[0.8125rem] text-foreground">Loaded — 60 invented customers and their history.</p>
+                  {canManage ? <RemoveSampleDataDialog organizationId={membership.organizationId} /> : null}
+                </>
+              ) : dataState.hasOwnData ? (
+                <p className="text-[0.8125rem] text-muted-foreground">
+                  Not available: this workspace has its own billing data, and sample data is never mixed into it.
+                  Create a new workspace to explore sample data.
+                </p>
+              ) : canManage ? (
+                <>
+                  <p className="text-[0.8125rem] text-muted-foreground">
+                    Fill this empty workspace with 18 months of invented customers to explore. Remove it any time.
+                  </p>
+                  <LoadSampleDataButton organizationId={membership.organizationId} then="refresh" />
+                </>
+              ) : (
+                <p className="text-[0.8125rem] text-muted-foreground">None loaded.</p>
+              )}
+            </div>
+          </CardContent>
         </Card>
       </section>
 
@@ -311,31 +302,19 @@ export default async function SettingsPage() {
                   ? "You are the only person with access to this workspace's data."
                   : `${formatCount(memberCount)} people have access to this workspace's data.`}
               </p>
-              <p id="invite-member-note" className="text-[0.6875rem] text-muted-foreground">
-                Invitations coming soon.
-              </p>
             </div>
-            <CardAction>
-              {/*
-                Unavailable, and says so — there is no invitation model or email
-                delivery behind it. `aria-disabled` rather than `disabled` so it
-                stays in the tab order and is announced with the note above; with
-                no handler, pressing it does nothing. Dimmed here because the
-                shared Button only styles the native `disabled` state.
-              */}
-              <Button
-                type="button"
-                aria-disabled="true"
-                aria-describedby="invite-member-note"
-                className={cn(
-                  "cursor-not-allowed bg-brand px-4 text-brand-foreground opacity-50",
-                  CONTROL_HEIGHT,
-                )}
-              >
-                <UserPlus aria-hidden />
-                Invite member
-              </Button>
-            </CardAction>
+            {canManage ? (
+              <CardAction>
+                {/* Adding a user IS inviting them: the Users page's dialog hands
+                    back an invite link (lib/invite-token.ts). */}
+                <Button asChild className={cn("bg-brand px-4 text-brand-foreground hover:bg-brand/90", CONTROL_HEIGHT)}>
+                  <Link href="/dashboard/users?action=add">
+                    <UserPlus aria-hidden />
+                    Invite member
+                  </Link>
+                </Button>
+              </CardAction>
+            ) : null}
           </CardHeader>
 
           {memberCount === 0 ? (
@@ -457,51 +436,39 @@ export default async function SettingsPage() {
           </CardHeader>
 
           <CardContent className="flex flex-col">
-            {actions.map((action) => (
-              <div
-                key={action.id}
-                className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5 border-t border-border py-3 first:border-t-0 first:pt-0 last:pb-0"
-              >
-                <div className="min-w-0 max-w-prose">
-                  <h3 className="text-[0.8125rem] font-medium text-foreground">
-                    {action.title}
-                  </h3>
-                  <p
-                    id={`${action.id}-description`}
-                    className="mt-0.5 text-[0.6875rem] text-muted-foreground text-balance"
-                  >
-                    {action.description}
-                  </p>
-                </div>
-
-                <div className="flex shrink-0 items-center gap-2">
-                  {action.lockNote ? (
-                    <span className="flex items-center gap-1 font-mono text-[0.625rem] font-medium tracking-[0.12em] text-muted-foreground uppercase">
-                      <Lock className="size-3" aria-hidden />
-                      {action.lockNote}
-                    </span>
-                  ) : null}
-                  {action.id === "leave-workspace" ? (
-                    <LeaveWorkspaceControl
-                      key={membership.organizationId}
-                      organizationId={membership.organizationId}
-                      workspaceName={organization.name}
-                      describedBy={`${action.id}-description`}
-                    />
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      disabled={action.disabled}
-                      aria-describedby={`${action.id}-description`}
-                      className={cn("px-4", CONTROL_HEIGHT)}
-                    >
-                      {action.label}
-                    </Button>
-                  )}
-                </div>
+            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5 pb-3">
+              <div className="min-w-0 max-w-prose">
+                <h3 className="text-[0.8125rem] font-medium text-foreground">Leave workspace</h3>
+                <p id="leave-workspace-description" className="mt-0.5 text-[0.6875rem] text-muted-foreground text-balance">
+                  You&apos;ll lose access to this workspace&apos;s data. An owner can re-invite you.
+                </p>
               </div>
-            ))}
+              <LeaveWorkspaceControl
+                key={membership.organizationId}
+                organizationId={membership.organizationId}
+                workspaceName={organization.name}
+                describedBy="leave-workspace-description"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5 border-t border-border pt-3">
+              <div className="min-w-0 max-w-prose">
+                <h3 className="text-[0.8125rem] font-medium text-foreground">Delete workspace</h3>
+                <p id="delete-workspace-description" className="mt-0.5 text-[0.6875rem] text-muted-foreground text-balance">
+                  Permanently deletes this workspace and all its data — customers, plans, subscriptions, invoices,
+                  metrics, members&apos; access and the audit log. This cannot be undone.
+                  {isOwner ? "" : " Only an owner can delete it."}
+                </p>
+              </div>
+              {isOwner ? (
+                <DeleteWorkspaceDialog
+                  key={membership.organizationId}
+                  organizationId={membership.organizationId}
+                  name={organization.name}
+                  describedBy="delete-workspace-description"
+                />
+              ) : null}
+            </div>
           </CardContent>
         </Card>
       </section>

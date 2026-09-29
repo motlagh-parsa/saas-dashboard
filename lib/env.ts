@@ -23,26 +23,24 @@ const envSchema = z.object({
   GITHUB_ID: z.string().min(1).optional(),
   GITHUB_SECRET: z.string().min(1).optional(),
 
-  // Single demo account for reviewers without GitHub. Never hard-code these.
-  // The default email matches the demo user created by prisma/seed.ts so a demo
-  // login resolves to a real, tenant-connected user.
+  // Optional demo account for reviewers. Never hard-code these. With
+  // DEMO_PASSWORD unset (or empty) the demo sign-in does not exist at all — the
+  // credentials provider only accepts registered users. The default email
+  // matches the demo user created by prisma/seed.ts, so a demo login resolves to
+  // a real, tenant-connected user.
   DEMO_EMAIL: z.string().min(1).default("demo@saas-dashboard.dev"),
-  DEMO_PASSWORD: z.string().min(1, "DEMO_PASSWORD is required"),
+  DEMO_PASSWORD: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
 
-  // Shared secret for the daily snapshot job (GET /api/cron/snapshots), sent in
-  // the `x-cron-secret` header. Optional: without it the app runs and the job
-  // endpoint refuses every call. An empty value counts as unset, and the
-  // .env.example placeholder is rejected outright — a secret printed in the repo
-  // protects nothing.
+  // Shared secret for the daily snapshot job (GET /api/cron/snapshots), sent as
+  // `Authorization: Bearer <CRON_SECRET>` — the header Vercel Cron sends when
+  // this variable is set on the project. Optional: without it the app runs and
+  // the job endpoint refuses every call. An empty value counts as unset.
   CRON_SECRET: z.preprocess(
     (value) => (value === "" ? undefined : value),
-    z
-      .string()
-      .min(16, "CRON_SECRET must be at least 16 characters")
-      .refine((value) => value !== "your-secret-here", {
-        message: "CRON_SECRET is still the .env.example placeholder — generate one with: openssl rand -hex 32",
-      })
-      .optional(),
+    z.string().min(16, "CRON_SECRET must be at least 16 characters").optional(),
   ),
 
   NODE_ENV: z
@@ -57,6 +55,15 @@ if (!parsed.success) {
     .map((issue) => `  - ${issue.path.join(".") || "(root)"}: ${issue.message}`)
     .join("\n");
   throw new Error(`Invalid environment variables:\n${issues}`);
+}
+
+/** The CRON_SECRET value .env.example ships with — fine locally, public everywhere else. */
+const EXAMPLE_CRON_SECRET = "dev-only-cron-secret-change-me";
+
+if (parsed.data.NODE_ENV === "production" && parsed.data.CRON_SECRET === EXAMPLE_CRON_SECRET) {
+  throw new Error(
+    "Invalid environment variables:\n  - CRON_SECRET: still the .env.example development value — generate one with: openssl rand -hex 32",
+  );
 }
 
 /** The single, typed, validated environment object for the whole app. */

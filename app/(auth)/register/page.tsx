@@ -7,7 +7,7 @@ import { RegisterForm } from "@/components/auth/register-form";
 
 export const metadata: Metadata = {
   title: "Create an account",
-  description: "Create an account and a workspace for your SaaS metrics.",
+  description: "Create an account, then set up a workspace for your SaaS metrics.",
 };
 
 export default function RegisterPage() {
@@ -18,7 +18,7 @@ export default function RegisterPage() {
           Create an account
         </h1>
         <p className="text-sm text-muted-foreground">
-          You&apos;ll get a workspace of your own, ready to track revenue.
+          Next, you&apos;ll name your workspace and bring in your data.
         </p>
       </div>
 

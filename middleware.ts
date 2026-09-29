@@ -13,8 +13,9 @@ export default withAuth({
 });
 
 // Route groups like (dashboard) are invisible in the URL, so we match the actual
-// authenticated paths that live inside that group. Everything under /dashboard is
-// protected; the marketing root and /sign-in stay public.
+// authenticated paths: everything under /dashboard, and /onboarding (which lives
+// in the (auth) group for its look, but needs a signed-in user). The marketing
+// root, /sign-in, /register and invite links stay public.
 export const config = {
-  matcher: ["/dashboard", "/dashboard/:path*"],
+  matcher: ["/dashboard", "/dashboard/:path*", "/onboarding"],
 };

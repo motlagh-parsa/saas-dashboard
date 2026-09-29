@@ -1,6 +1,7 @@
 "use server";
 
-// Workspace mutations for the Settings page: rename, and leave.
+// Workspace mutations: create (the switcher dialog and onboarding), and from
+// Settings: rename, change currency, leave, delete.
 //
 // File-level `"use server"` for the same reason as `lib/notifications.ts`: the
 // forms that call these are client islands. Every export is therefore a public
@@ -18,34 +19,34 @@
 //     server would resolve NOW. Resolving fresh would let a stale tab (the user
 //     already left X in another tab) silently leave or rename workspace Y.
 //
-// Both record an audit entry once they have actually changed something, via
-// `after()` — see lib/audit-writer.ts.
+// Creating a workspace is the one action with no workspace to check: the caller
+// becomes its OWNER. Every write records an audit entry once it has actually
+// changed something, via `after()` — see lib/audit-writer.ts — except delete,
+// whose audit log is deleted with the workspace.
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { after } from "next/server";
 import { Prisma, type Role } from "@prisma/client";
-import { z } from "zod";
 
+import { ACTIVE_ORG_COOKIE, ACTIVE_ORG_COOKIE_MAX_AGE } from "@/lib/active-org";
 import { writeAudit } from "@/lib/audit-writer";
 import { requireSession } from "@/lib/auth";
+import { readForm, type BillingFormState } from "@/lib/billing-form";
+import { parseForm } from "@/lib/billing-caller";
+import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
+import type { WorkspaceActionState } from "@/lib/workspace-action-state";
 import {
-  WORKSPACE_NAME_MAX,
-  WORKSPACE_NAME_MIN,
-  type WorkspaceActionState,
-} from "@/lib/workspace-action-state";
+  CREATE_WORKSPACE_FIELDS,
+  CURRENCY_LOCKED,
+  createWorkspaceSchema,
+  slugify,
+  workspaceCurrencySchema,
+  workspaceNameSchema,
+} from "@/lib/workspace-form";
 
 const STALE_PAGE = "This page is out of date. Reload it and try again.";
-
-const workspaceNameSchema = z
-  .string({ error: "Enter a workspace name." })
-  .trim()
-  .min(WORKSPACE_NAME_MIN, {
-    error: `Use at least ${WORKSPACE_NAME_MIN} characters.`,
-  })
-  .max(WORKSPACE_NAME_MAX, {
-    error: `Use at most ${WORKSPACE_NAME_MAX} characters.`,
-  });
 
 interface CallerMembership {
   readonly userId: string;
@@ -210,5 +211,220 @@ export async function leaveWorkspace(
   // no longer a member, so both land where leaving lands. `redirect` throws, so
   // it stays outside the try/catch above.
   revalidatePath("/dashboard", "layout");
+  redirect("/dashboard");
+}
+
+// ---------------------------------------------------------------------------
+// Create, change currency, delete — form actions with the billing forms' state
+// shape (per-field errors), driven by the shared dialogs and onboarding.
+// ---------------------------------------------------------------------------
+
+function formError(message: string): BillingFormState {
+  return { status: "error", message, fieldErrors: {} };
+}
+
+/** Slug attempts before giving up: the bare slug, then four random suffixes. */
+const SLUG_ATTEMPTS = 5;
+
+/** A short random suffix: 6 hex chars, 16.7M values per name. */
+function slugSuffix(): string {
+  const bytes = new Uint8Array(3);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function selectWorkspace(organizationId: string): Promise<void> {
+  (await cookies()).set(ACTIVE_ORG_COOKIE, organizationId, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: ACTIVE_ORG_COOKIE_MAX_AGE,
+    // Local dev runs over plain http, where a Secure cookie would never be sent.
+    secure: env.NODE_ENV === "production",
+  });
+}
+
+/**
+ * Creates a workspace with the caller as its OWNER, selects it, and continues
+ * to /onboarding (which opens at "Bring your data" for it).
+ *
+ * The slug is the name slugified. Uniqueness is left to the database: the bare
+ * slug is tried first and, on a unique-constraint error, retried with a short
+ * random suffix — no check-then-insert, which two creates could both pass.
+ * The organization and the membership are one nested write, so a failure never
+ * leaves a workspace nobody belongs to.
+ */
+export async function createWorkspace(
+  _previous: BillingFormState,
+  formData: FormData,
+): Promise<BillingFormState> {
+  const session = await requireSession();
+  const parsed = parseForm(createWorkspaceSchema(), formData, CREATE_WORKSPACE_FIELDS);
+  if (!parsed.ok) return parsed.state;
+  const { name, currency } = parsed.data;
+
+  const base = slugify(name);
+  let created: { id: string; slug: string } | null = null;
+  for (let attempt = 0; attempt < SLUG_ATTEMPTS && created === null; attempt++) {
+    const slug = attempt === 0 ? base : `${base}-${slugSuffix()}`;
+    try {
+      created = await prisma.organization.create({
+        data: {
+          name,
+          slug,
+          currency,
+          memberships: { create: { userId: session.user.id, role: "OWNER" } },
+        },
+        select: { id: true, slug: true },
+      });
+    } catch (error: unknown) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") continue;
+      throw error;
+    }
+  }
+  if (created === null) return formError("Couldn't create the workspace. Try again.");
+
+  const workspace = created;
+  await selectWorkspace(workspace.id);
+  after(() =>
+    writeAudit({
+      organizationId: workspace.id,
+      actorId: session.user.id,
+      action: "workspace.created",
+      targetType: "workspace",
+      targetId: workspace.id,
+      targetLabel: name,
+      metadata: { currency, slug: workspace.slug, detail: `${name} · ${currency}` },
+    }),
+  );
+
+  revalidatePath("/", "layout");
+  // Outside any try: `redirect` throws by design.
+  redirect("/onboarding");
+}
+
+/**
+ * Changes the reporting currency — only while the workspace holds no billing
+ * data at all. Every stored amount is in minor units of this currency, so
+ * changing it afterwards would silently re-denominate every figure.
+ *
+ * The emptiness check and the update run in one SERIALIZABLE transaction, so a
+ * customer added at the same instant cannot slip in between them.
+ */
+export async function updateWorkspaceCurrency(
+  _previous: BillingFormState,
+  formData: FormData,
+): Promise<BillingFormState> {
+  const caller = await callerMembership(formData);
+  if (caller === null) return formError(STALE_PAGE);
+  if (caller.role === "MEMBER") return formError("Only owners and admins can change the currency.");
+
+  const parsed = parseForm(workspaceCurrencySchema(), formData, ["currency"]);
+  if (!parsed.ok) return parsed.state;
+  const { currency } = parsed.data;
+
+  type Outcome = { kind: "locked" } | { kind: "unchanged" } | { kind: "changed"; from: string };
+  let outcome: Outcome;
+  try {
+    outcome = await prisma.$transaction(
+      async (tx): Promise<Outcome> => {
+        const scope = { organizationId: caller.organizationId };
+        const counts = await Promise.all([
+          tx.customer.count({ where: scope }),
+          tx.plan.count({ where: scope }),
+          tx.subscription.count({ where: scope }),
+          tx.invoice.count({ where: scope }),
+        ]);
+        if (counts.some((count) => count > 0)) return { kind: "locked" };
+        const organization = await tx.organization.findUniqueOrThrow({
+          where: { id: caller.organizationId },
+          select: { currency: true },
+        });
+        if (organization.currency === currency) return { kind: "unchanged" };
+        await tx.organization.update({ where: { id: caller.organizationId }, data: { currency } });
+        return { kind: "changed", from: organization.currency };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  } catch (error: unknown) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
+      return formError("Someone else changed this workspace at the same moment. Try again.");
+    }
+    throw error;
+  }
+
+  if (outcome.kind === "locked") return formError(CURRENCY_LOCKED);
+  if (outcome.kind === "changed") {
+    const from = outcome.from;
+    after(() =>
+      writeAudit({
+        organizationId: caller.organizationId,
+        actorId: caller.userId,
+        action: "workspace.currency_changed",
+        targetType: "workspace",
+        targetId: caller.organizationId,
+        metadata: { from, to: currency, detail: `${from} → ${currency}` },
+      }),
+    );
+  }
+
+  revalidatePath("/dashboard", "layout");
+  return {
+    status: "success",
+    message: outcome.kind === "changed" ? `Amounts are now in ${currency}.` : "Currency unchanged.",
+    fieldErrors: {},
+  };
+}
+
+/**
+ * Deletes the workspace and everything in it. OWNER only, and only with its
+ * name typed exactly (re-checked here against the stored name).
+ *
+ * One delete of the Organization row, in a transaction: every relation that
+ * points at it — memberships, customers, plans, subscriptions, invoices,
+ * snapshots, notifications, report runs and the audit log — is declared
+ * `onDelete: Cascade` in prisma/schema.prisma, so Postgres removes them in the
+ * same statement and nothing is left orphaned. Users are accounts, not
+ * workspace data: they stay, and simply lose this membership.
+ *
+ * No audit entry: the log is part of what is deleted.
+ */
+export async function deleteWorkspace(
+  _previous: BillingFormState,
+  formData: FormData,
+): Promise<BillingFormState> {
+  const caller = await callerMembership(formData);
+  if (caller === null) return formError(STALE_PAGE);
+  if (caller.role !== "OWNER") return formError("Only an owner can delete this workspace.");
+
+  const { confirmName } = readForm(formData, ["confirmName"]);
+  const deleted = await prisma.$transaction(async (tx) => {
+    const organization = await tx.organization.findUnique({
+      where: { id: caller.organizationId },
+      select: { name: true },
+    });
+    if (organization === null) return { kind: "gone" as const };
+    if (confirmName.trim() !== organization.name) {
+      return { kind: "mismatch" as const, name: organization.name };
+    }
+    await tx.organization.delete({ where: { id: caller.organizationId } });
+    return { kind: "deleted" as const };
+  });
+
+  if (deleted.kind === "mismatch") {
+    return {
+      status: "error",
+      message: null,
+      fieldErrors: { confirmName: `Type ${deleted.name} exactly to confirm.` },
+    };
+  }
+
+  // The switcher's choice pointed here: drop it, so /dashboard resolves the
+  // caller's next workspace — or sends someone with none to /onboarding.
+  const cookieStore = await cookies();
+  if (cookieStore.get(ACTIVE_ORG_COOKIE)?.value === caller.organizationId) {
+    cookieStore.delete(ACTIVE_ORG_COOKIE);
+  }
+  revalidatePath("/", "layout");
   redirect("/dashboard");
 }

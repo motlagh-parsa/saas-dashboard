@@ -4,9 +4,15 @@
 // the full list for the switcher, and reads the notification feed for the bell.
 //
 // Authorization is NOT done here — each protected page calls `requireSession()`.
-// It degrades instead: no session or no membership means no org id — the bell
-// renders empty rather than guessing, and the switcher reads "No workspace" (its
-// own fallback when no org in its list is active).
+// It degrades instead: no session means no org id, and the bell renders empty.
+//
+// One redirect IS done here: a signed-in user with no membership at all is sent
+// to /onboarding to create a workspace, since every page below is scoped to one.
+// Invited users already have a membership and never see it.
+//
+// It also reads what the ACTIVE workspace holds (lib/workspace-status.ts): the
+// sample-data banner shows while it has SAMPLE rows, and the sidebar's metrics
+// status reports how fresh its snapshots are.
 //
 // Why the bell's data is read HERE and not inside the bell: `router.refresh()`
 // re-runs the Server Components of the current route, layouts included, and
@@ -15,12 +21,15 @@
 // inside the bell updates the page behind it — one mechanism, both directions,
 // no client-side fetching and no second copy of the feed.
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth/next";
 
 import type { Notification } from "@prisma/client";
 
 import { getActiveOrgId } from "@/lib/active-org";
 import { authOptions } from "@/lib/auth";
+import { currencyOptions } from "@/lib/currencies";
+import { getWorkspaceDataState } from "@/lib/workspace-status";
 import { prisma } from "@/lib/prisma";
 import { THEME_COOKIE, parseTheme } from "@/lib/theme";
 import { getNotifications, getUnreadCount } from "@/lib/notifications";
@@ -38,6 +47,8 @@ import {
 import { SidebarNav } from "@/components/dashboard/sidebar-nav";
 import { ThemeToggle } from "@/components/dashboard/theme-toggle";
 import { UserMenu } from "@/components/dashboard/user-menu";
+import { MetricsStatus } from "@/components/workspace/metrics-status";
+import { SampleDataBanner } from "@/components/workspace/sample-data-banner";
 
 /** How many rows the bell shows before deferring to the full page. */
 const BELL_LIMIT = 5;
@@ -71,6 +82,9 @@ export default async function DashboardLayout({
       ])
     : [[], null, null];
 
+  // No workspace to show anything in: onboarding creates the first one.
+  if (userId !== null && memberships.length === 0) redirect("/onboarding");
+
   const orgs = memberships.map(({ organization }) => ({
     id: organization.id,
     name: organization.name,
@@ -85,12 +99,15 @@ export default async function DashboardLayout({
   // here so the toggle's icon matches the theme on first paint.
   const theme = parseTheme((await cookies()).get(THEME_COOKIE)?.value);
 
-  const [recent, unreadCount]: [Notification[], number] = activeOrgId
+  const [recent, unreadCount, dataState] = activeOrgId
     ? await Promise.all([
         getNotifications(activeOrgId, { limit: BELL_LIMIT }),
         getUnreadCount(activeOrgId),
+        getWorkspaceDataState(activeOrgId),
       ])
-    : [[], 0];
+    : ([[], 0, null] as [Notification[], number, null]);
+
+  const currencies = currencyOptions();
 
   return (
     <SidebarDrawerProvider className="flex min-h-svh w-full">
@@ -108,16 +125,13 @@ export default async function DashboardLayout({
         <OrgSwitcher
           orgs={orgs}
           activeOrgId={activeOrgId ?? ""}
+          currencies={currencies}
           className="w-full md:hidden"
         />
         <SidebarNav unreadCount={unreadCount} />
-        <div className="mt-auto flex items-center gap-2 rounded-md border border-sidebar-border/70 px-2.5 py-2">
-          <span className="relative flex size-2 shrink-0">
-            <span className="absolute inline-flex size-full rounded-full bg-positive/70" />
-            <span className="relative inline-flex size-2 rounded-full bg-positive" />
-          </span>
-          <span className="text-xs text-muted-foreground">Metrics up to date</span>
-        </div>
+        {dataState ? (
+          <MetricsStatus latestSnapshot={dataState.latestSnapshot} hasSubscriptions={dataState.hasSubscriptions} />
+        ) : null}
       </SidebarDrawer>
 
       {/* Content column */}
@@ -133,6 +147,7 @@ export default async function DashboardLayout({
           <OrgSwitcher
             orgs={orgs}
             activeOrgId={activeOrgId ?? ""}
+            currencies={currencies}
             className="hidden md:flex"
           />
 
@@ -163,6 +178,10 @@ export default async function DashboardLayout({
             />
           </div>
         </header>
+
+        {activeOrgId !== null && dataState?.hasSampleData ? (
+          <SampleDataBanner organizationId={activeOrgId} canRemove={activeRole !== null && activeRole !== "MEMBER"} />
+        ) : null}
 
         {children}
       </div>

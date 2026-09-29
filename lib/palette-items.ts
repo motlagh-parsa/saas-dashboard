@@ -49,7 +49,7 @@ export const ADD_USER_HREF = "/dashboard/users?action=add";
 const BILLING_ACTIONS: readonly { id: string; label: string; href: string; icon: ComponentType<{ className?: string }> }[] = [
   { id: "action-add-customer", label: "Add customer", href: "/dashboard/customers?action=add", icon: Users },
   { id: "action-add-subscription", label: "Add subscription", href: "/dashboard/revenue?action=add-subscription", icon: CirclePlus },
-  { id: "action-create-plan", label: "Create plan", href: "/dashboard/plans?action=add", icon: Tag },
+  { id: "action-create-plan", label: "Create plan", href: "/dashboard/plans?action=create", icon: Tag },
   { id: "action-record-invoice", label: "Record invoice", href: "/dashboard/invoices?action=record", icon: ReceiptText },
 ];
 
