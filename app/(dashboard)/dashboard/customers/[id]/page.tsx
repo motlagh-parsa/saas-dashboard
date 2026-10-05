@@ -18,7 +18,7 @@ import { notFound } from "next/navigation";
 import { Archive, ArchiveRestore, ArrowLeft, CalendarDays, CircleDot, Receipt, Wallet } from "lucide-react";
 
 import { getActiveOrgId } from "@/lib/active-org";
-import { auditActionLabel, auditDetails } from "@/lib/audit-view";
+import { auditActionLabel, auditActorLabel, auditDetails } from "@/lib/audit-view";
 import { requireSession } from "@/lib/auth";
 import { describeTerms, subscriptionChain } from "@/lib/billing-ops";
 import {
@@ -35,7 +35,6 @@ import {
   formatDay,
   formatEnumLabel,
   formatMoneyExact,
-  formatPersonName,
   formatRelativeTime,
 } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -153,7 +152,7 @@ export default async function CustomerPage({ params }: CustomerPageProps) {
       where: { organizationId, metadata: { path: ["customerId"], equals: customer.id } },
       orderBy: { createdAt: "desc" },
       take: ACTIVITY_LIMIT,
-      include: { actor: { select: { name: true, email: true } } },
+      include: { actor: { select: { name: true, email: true } }, apiKey: { select: { name: true } } },
     }),
   ]);
 
@@ -451,7 +450,7 @@ export default async function CustomerPage({ params }: CustomerPageProps) {
                   <span className="font-medium text-foreground">{auditActionLabel(entry.action)}</span>
                   <span className="min-w-0 flex-1 text-muted-foreground">{auditDetails(entry.action, entry.metadata)}</span>
                   <span className="text-xs text-muted-foreground">
-                    {entry.actor ? formatPersonName(entry.actor.name, entry.actor.email) : "A deleted user"}
+                    {auditActorLabel(entry, "A deleted user")}
                     {" · "}
                     <time dateTime={entry.createdAt.toISOString()} title={entry.createdAt.toISOString()}>
                       {formatRelativeTime(entry.createdAt, now)}

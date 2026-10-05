@@ -9,6 +9,7 @@
 // inside the cards the same way `WorkspaceDetailsForm` does on Settings.
 import type { Metadata } from "next";
 
+import { getActiveOrgId } from "@/lib/active-org";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { formatInitials, formatPersonName } from "@/lib/format";
@@ -30,10 +31,22 @@ export default async function ProfilePage() {
   const session = await requireSession();
 
   // `requireSession` has just confirmed this row exists and is not suspended.
-  const user = await prisma.user.findUniqueOrThrow({
-    where: { id: session.user.id },
-    select: { name: true, email: true, passwordHash: true },
-  });
+  const [user, organizationId] = await Promise.all([
+    prisma.user.findUniqueOrThrow({
+      where: { id: session.user.id },
+      select: { name: true, email: true, passwordHash: true },
+    }),
+    getActiveOrgId(session.user.id),
+  ]);
+  // Only for the settings tabs: the API keys tab is shown to owners and admins
+  // of the active workspace.
+  const membership =
+    organizationId === null
+      ? null
+      : await prisma.membership.findUnique({
+          where: { userId_organizationId: { userId: session.user.id, organizationId } },
+          select: { role: true },
+        });
   // Only whether a hash exists crosses into the render — never the hash itself.
   const hasPassword = user.passwordHash !== null;
   const displayName = formatPersonName(user.name, user.email);
@@ -51,7 +64,7 @@ export default async function ProfilePage() {
             your account, in every workspace
           </p>
         </div>
-        <SettingsTabs current="profile" />
+        <SettingsTabs current="profile" showApiKeys={membership !== null && membership.role !== "MEMBER"} />
       </header>
 
       <section className="rise mt-3 [animation-delay:60ms]">

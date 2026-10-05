@@ -25,7 +25,13 @@ import "server-only";
 // a change never edits a past segment in place — it ends the current segment on
 // the effective date and opens the next one the same day, linked through
 // `previousSubscriptionId`. Only Correct rewrites a segment, and says so.
-import { Prisma, type BillingInterval, type InvoiceStatus, type SubscriptionStatus } from "@prisma/client";
+import {
+  Prisma,
+  type BillingInterval,
+  type DataSource,
+  type InvoiceStatus,
+  type SubscriptionStatus,
+} from "@prisma/client";
 
 import type { AuditAction, AuditTargetType } from "@/lib/audit-view";
 import {
@@ -86,6 +92,16 @@ function refuse(message: string): OpResult<never> {
 
 function fieldError(field: string, message: string): OpResult<never> {
   return { ok: false, message: null, fieldErrors: { [field]: message } };
+}
+
+/**
+ * Where a created row comes from, and the caller's own ID for it. The UI passes
+ * nothing (MANUAL, no external ID); the REST API passes source API and the
+ * external_id from the URL, so the same operation serves both.
+ */
+export interface WriteOptions {
+  readonly source?: DataSource;
+  readonly externalId?: string | null;
 }
 
 function isKnownError(error: unknown, code: string): boolean {
@@ -187,9 +203,16 @@ export interface CustomerInput {
 export async function createCustomerOp(
   organizationId: string,
   input: CustomerInput,
+  options: WriteOptions = {},
 ): Promise<OpResult<{ id: string }>> {
   const customer = await prisma.customer.create({
-    data: { organizationId, name: input.name, email: input.email, source: "MANUAL" },
+    data: {
+      organizationId,
+      name: input.name,
+      email: input.email,
+      source: options.source ?? "MANUAL",
+      externalId: options.externalId ?? null,
+    },
     select: { id: true },
   });
   return {
@@ -365,6 +388,7 @@ export async function createPlanOp(
   organizationId: string,
   currency: string,
   input: PlanInput,
+  options: WriteOptions = {},
 ): Promise<OpResult<{ id: string }>> {
   if (await planNameTaken(organizationId, input.name, null)) return fieldError("name", PLAN_NAME_TAKEN);
   let plan: { id: string };
@@ -376,7 +400,8 @@ export async function createPlanOp(
         amountCents: input.price,
         interval: input.interval,
         intervalCount: input.intervalCount,
-        source: "MANUAL",
+        source: options.source ?? "MANUAL",
+        externalId: options.externalId ?? null,
       },
       select: { id: true },
     });
@@ -641,7 +666,9 @@ export async function createSubscriptionOp(
   currency: string,
   input: CreateSubscriptionInput,
   now: Date = new Date(),
+  options: WriteOptions = {},
 ): Promise<OpResult<{ subscriptionId: string; customerId: string; invoices: number }>> {
+  const source = options.source ?? "MANUAL";
   const existingCustomer =
     input.customerId === NEW_CUSTOMER
       ? null
@@ -672,7 +699,7 @@ export async function createSubscriptionOp(
     const customer =
       existingCustomer ??
       (await tx.customer.create({
-        data: { organizationId, name: input.newCustomerName, source: "MANUAL" },
+        data: { organizationId, name: input.newCustomerName, source },
         select: { id: true, name: true },
       }));
     const subscription = await tx.subscription.create({
@@ -686,7 +713,8 @@ export async function createSubscriptionOp(
         interval: terms.interval,
         intervalCount: terms.intervalCount,
         startedAt: input.startDate,
-        source: "MANUAL",
+        source,
+        externalId: options.externalId ?? null,
       },
       select: { id: true },
     });
@@ -701,7 +729,7 @@ export async function createSubscriptionOp(
           issuedAt,
           dueAt: issuedAt,
           paidAt: issuedAt,
-          source: "MANUAL" as const,
+          source,
         })),
       });
     }
@@ -767,6 +795,7 @@ export async function changeSubscriptionOp(
   currency: string,
   input: ChangeSubscriptionInput,
   now: Date = new Date(),
+  options: WriteOptions = {},
 ): Promise<OpResult<{ subscriptionId: string }>> {
   await settleEndedSegments(prisma, organizationId, now);
   const found = await currentSegment(organizationId, input.subscriptionId, now);
@@ -826,7 +855,8 @@ export async function changeSubscriptionOp(
           intervalCount: terms.intervalCount,
           startedAt: input.effectiveDate,
           previousSubscriptionId: current.id,
-          source: "MANUAL",
+          source: options.source ?? "MANUAL",
+          externalId: options.externalId ?? null,
         },
         select: { id: true },
       });
@@ -1206,6 +1236,7 @@ export async function recordInvoiceOp(
   organizationId: string,
   currency: string,
   input: RecordInvoiceInput,
+  options: WriteOptions = {},
 ): Promise<OpResult<{ id: string }>> {
   const customer = await prisma.customer.findFirst({
     where: { id: input.customerId, organizationId, archivedAt: null },
@@ -1234,7 +1265,8 @@ export async function recordInvoiceOp(
       issuedAt: input.issuedDate,
       dueAt: input.dueDate,
       paidAt: input.status === "PAID" ? input.paidDate : null,
-      source: "MANUAL",
+      source: options.source ?? "MANUAL",
+      externalId: options.externalId ?? null,
     },
     select: { id: true },
   });

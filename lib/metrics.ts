@@ -1506,3 +1506,32 @@ export async function getCustomerList(
     averageMRRCents: active.length === 0 ? 0 : Math.round(activeMRR / active.length),
   };
 }
+
+/**
+ * Customers who came BACK over a period, from the daily snapshots — the same
+ * source and window as `getCustomerActivity`'s new and churned counts.
+ *
+ * A snapshot stores active, new and churned customers, and day to day
+ * `active − previous active = new + reactivated − churned` (new means never
+ * active before; everyone else who turns active is a return). So each day's
+ * reactivations are that difference rearranged, summed over (start, end].
+ */
+export async function getReactivatedCustomers(organizationId: string, period: Period): Promise<number> {
+  const resolved = resolvePeriod(period);
+  const rows = await prisma.$queryRaw<{ reactivated: NumericLike }[]>(Prisma.sql`
+    WITH days AS (
+      SELECT m."date", m."activeCustomers", m."newCustomers", m."churnedCustomers",
+             LAG(m."activeCustomers") OVER (ORDER BY m."date") AS previous_active
+      FROM "MetricSnapshot" m
+      WHERE m."organizationId" = ${organizationId}
+        AND m."date" >= ${ts(resolved.start)}::date
+        AND m."date" <= ${ts(resolved.end)}::date
+    )
+    SELECT COALESCE(SUM(GREATEST(
+      "activeCustomers" - COALESCE(previous_active, 0) - "newCustomers" + "churnedCustomers", 0
+    )), 0)::int AS reactivated
+    FROM days
+    WHERE "date" > ${ts(resolved.start)}::date
+  `);
+  return toNumber(rows[0]?.reactivated ?? 0);
+}

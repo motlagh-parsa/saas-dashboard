@@ -25,7 +25,7 @@ import { requireSession } from "@/lib/auth";
 import { ID_PATTERN, fieldErrorsOf, readForm, type BillingFormState } from "@/lib/billing-form";
 import type { OpResult } from "@/lib/billing-ops";
 import { prisma } from "@/lib/prisma";
-import { recomputeSnapshots } from "@/lib/snapshots";
+import { scheduleRecompute } from "@/lib/snapshots";
 
 export const STALE_PAGE = "This page is out of date. Reload it and try again.";
 export const WRITERS_ONLY = "Only owners and admins can change billing data.";
@@ -106,19 +106,9 @@ export function finishWrite<T>(caller: BillingCaller, result: OpResult<T>): Bill
   const { audit, affectedFrom } = result;
   after(async () => {
     await writeAudit({ organizationId: caller.organizationId, actorId: caller.userId, ...audit });
-    if (affectedFrom !== null) {
-      try {
-        await recomputeSnapshots(caller.organizationId, affectedFrom);
-      } catch (error: unknown) {
-        // Logged, never thrown: the write stands, and the next write or the
-        // daily cron rewrites these days again.
-        console.error("[snapshots] recompute failed", {
-          organizationId: caller.organizationId,
-          from: affectedFrom.toISOString(),
-          error,
-        });
-      }
-    }
+    // Coalesced with any recompute of this workspace already running; logged,
+    // never thrown — see lib/snapshots.ts.
+    if (affectedFrom !== null) await scheduleRecompute(caller.organizationId, affectedFrom);
   });
 
   // Layout scope: a billing write moves numbers on the overview, revenue,

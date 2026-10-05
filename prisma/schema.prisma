@@ -43,6 +43,8 @@ model User {
   auditLogs     AuditLog[]
   /// CSV imports this user started.
   importRuns    ImportRun[]
+  /// API keys this user created.
+  apiKeys       ApiKey[]
 }
 
 model Account {
@@ -110,6 +112,7 @@ model Organization {
   reportRuns    ReportRun[]
   auditLogs     AuditLog[]
   importRuns    ImportRun[]
+  apiKeys       ApiKey[]
 }
 
 model Membership {
@@ -457,6 +460,9 @@ model AuditLog {
   id             String   @id @default(cuid())
   organizationId String
   actorId        String?
+  /// Set for writes made through the REST API: the key that made them. Such
+  /// entries have no actorId — a key acts for the workspace, not for a person.
+  apiKeyId       String?
   /// Dotted verb, e.g. "user.suspended" — the closed list is in lib/audit-view.ts.
   action         String
   targetType     String
@@ -467,12 +473,72 @@ model AuditLog {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   actor        User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  // SetNull: a deleted key's entries stay, reading as "a deleted API key".
+  apiKey       ApiKey?      @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
 
   // The log query: one tenant, newest first. Also covers the Organization
   // cascade-delete FK via the leading `organizationId`.
   @@index([organizationId, createdAt])
   // The User SetNull FK — without it, deleting a user scans the whole log.
   @@index([actorId])
+  // The ApiKey SetNull FK.
+  @@index([apiKeyId])
+}
+
+// ---------------------------------------------------------------------------
+// REST API keys and rate limiting (app/api/v1, lib/api).
+//
+// A key belongs to one workspace, and the workspace of every API request comes
+// from its key — never from the request. Only the SHA-256 of a key is stored;
+// the key itself is shown once, when it is created. `prefix` (its first 12
+// characters, "mrd_" and 8 more) is what the UI shows to tell keys apart.
+// ---------------------------------------------------------------------------
+
+enum ApiScope {
+  /// Read endpoints only.
+  READ
+  /// Read and write.
+  WRITE
+}
+
+model ApiKey {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String
+  prefix         String
+  /// SHA-256 hex of the full key — the only form of it that is stored.
+  keyHash        String    @unique
+  scope          ApiScope
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  /// Touched at most once a minute, not on every request.
+  lastUsedAt     DateTime?
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?           @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  auditLogs    AuditLog[]
+  rateLimits   ApiRateLimit[]
+
+  // The Settings list, and counting a workspace's active keys. Also covers the
+  // Organization cascade-delete FK.
+  @@index([organizationId, revokedAt])
+  // The User SetNull FK.
+  @@index([createdById])
+}
+
+/// Requests per key per one-minute window. In Postgres, not in memory: on
+/// serverless every request may land on a different instance. Incremented with
+/// one atomic upsert; old windows are pruned as new ones open.
+model ApiRateLimit {
+  keyId       String
+  windowStart DateTime
+  count       Int      @default(0)
+
+  key ApiKey @relation(fields: [keyId], references: [id], onDelete: Cascade)
+
+  @@id([keyId, windowStart])
 }
 
 // ---------------------------------------------------------------------------

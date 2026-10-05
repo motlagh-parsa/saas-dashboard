@@ -3,8 +3,8 @@
 // Plans, Invoices and the metric pages.
 //
 // Callers render it only for owners and admins — members cannot import, and a
-// link to a page that sends them away would be a dead end. "Connect via API" will
-// sit beside it once it exists; until then nothing is shown for it.
+// link to a page that sends them away would be a dead end. On onboarding,
+// "Connect via API" (api-slot.tsx) sits beside it.
 import Link from "next/link";
 import { ArrowRight, FileUp } from "lucide-react";
 
@@ -24,7 +24,7 @@ export function ImportSlot({ variant = "link", kind }: ImportSlotProps) {
     return (
       <Link
         href={href}
-        className="group flex h-full flex-col items-start gap-3 rounded-xl border border-border bg-card p-5 outline-none transition-colors hover:border-brand/60 hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring sm:col-span-2"
+        className="group flex h-full flex-col items-start gap-3 rounded-xl border border-border bg-card p-5 outline-none transition-colors hover:border-brand/60 hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
       >
         <span className="grid size-10 place-items-center rounded-lg bg-brand/12 text-brand ring-1 ring-brand/20">
           <FileUp aria-hidden className="size-5" />

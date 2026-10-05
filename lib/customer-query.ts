@@ -240,3 +240,33 @@ export async function getCustomerExportRows(
   `);
   return rows.map(toRow);
 }
+
+/**
+ * The same rows in id order, one page after `startingAfter` — the REST API's
+ * customer list and single-customer reads. `filter: "any"` includes archived
+ * customers (a lookup by external id should find one); `limit` is taken as is,
+ * so a caller wanting a has-more probe asks for one extra.
+ */
+export async function getCustomerRowsById(
+  organizationId: string,
+  options: {
+    readonly filter: CustomerFilter | "any";
+    readonly externalId?: string;
+    readonly startingAfter: string | null;
+    readonly limit: number;
+  },
+  asOf: Date = new Date(),
+): Promise<CustomerPageRow[]> {
+  const conditions: Prisma.Sql[] = [options.filter === "any" ? Prisma.sql`TRUE` : filterSql(options.filter)];
+  if (options.externalId !== undefined) conditions.push(Prisma.sql`"externalId" = ${options.externalId}`);
+  if (options.startingAfter !== null) conditions.push(Prisma.sql`id > ${options.startingAfter}`);
+  const rows = await prisma.$queryRaw<SqlRow[]>(Prisma.sql`
+    WITH ${customersView(organizationId, asOf)}
+    SELECT id, name, email, "externalId", source, archived, status, mrr_cents, live_plans, first_paid_at
+    FROM classified
+    WHERE ${Prisma.join(conditions, " AND ")}
+    ORDER BY id ASC
+    LIMIT ${options.limit}
+  `);
+  return rows.map(toRow);
+}

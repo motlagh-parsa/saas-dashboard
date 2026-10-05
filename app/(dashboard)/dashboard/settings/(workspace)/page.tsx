@@ -191,7 +191,7 @@ export default async function SettingsPage() {
             {formatCount(memberCount)} {memberCount === 1 ? "member" : "members"}
           </p>
         </div>
-        <SettingsTabs current="workspace" />
+        <SettingsTabs current="workspace" showApiKeys={canManage} />
       </header>
 
       {/*

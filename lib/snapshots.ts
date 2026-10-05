@@ -180,3 +180,52 @@ export async function diffAgainstRebuild(
   }
   return mismatches;
 }
+
+// ---------------------------------------------------------------------------
+// Coalesced recomputes
+// ---------------------------------------------------------------------------
+
+interface RecomputeState {
+  /** Earliest day a write asked for while a recompute was already running. */
+  pendingFrom: Date | null;
+}
+
+/** Per workspace, in this server instance: the recompute running now, if any. */
+const running = new Map<string, RecomputeState>();
+
+/**
+ * Recomputes a workspace's snapshots from `fromDate` — coalescing bursts of
+ * writes. If a recompute of this workspace is already running in this
+ * instance, the date is only recorded (the earliest wins) and this call returns
+ * at once; the running one does ONE more pass from that date when it finishes.
+ * So two hundred API writes in a row cause a handful of recomputes, not two
+ * hundred, and every write's days are still rewritten.
+ *
+ * Across instances, the advisory lock in `recomputeSnapshots` keeps two
+ * recomputes of one workspace from overlapping; coalescing is the saving on top.
+ * Errors are logged, never thrown — the rows stand and the next write or the
+ * daily cron rewrites the days.
+ */
+export async function scheduleRecompute(organizationId: string, fromDate: Date): Promise<void> {
+  const existing = running.get(organizationId);
+  if (existing !== undefined) {
+    if (existing.pendingFrom === null || fromDate < existing.pendingFrom) existing.pendingFrom = fromDate;
+    return;
+  }
+  const state: RecomputeState = { pendingFrom: null };
+  running.set(organizationId, state);
+  let next: Date | null = fromDate;
+  try {
+    while (next !== null) {
+      try {
+        await recomputeSnapshots(organizationId, next);
+      } catch (error: unknown) {
+        console.error("[snapshots] recompute failed", { organizationId, from: next.toISOString(), error });
+      }
+      next = state.pendingFrom;
+      state.pendingFrom = null;
+    }
+  } finally {
+    running.delete(organizationId);
+  }
+}

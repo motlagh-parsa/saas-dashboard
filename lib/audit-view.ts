@@ -8,7 +8,7 @@
  */
 import type { Prisma } from "@prisma/client";
 
-import { EM_DASH, formatBillingInterval, formatEnumLabel, formatMoneyExact } from "@/lib/format";
+import { EM_DASH, formatBillingInterval, formatEnumLabel, formatMoneyExact, formatPersonName } from "@/lib/format";
 
 export const AUDIT_ACTION_LABELS = {
   "user.created": "Added user",
@@ -49,11 +49,29 @@ export const AUDIT_ACTION_LABELS = {
   "invoice.uncollectible": "Marked uncollectible",
   "invoice.deleted": "Deleted invoice",
   "invoice.exported": "Exported invoices",
+  "api_key.created": "Created API key",
+  "api_key.revoked": "Revoked API key",
 } as const;
 
 export type AuditAction = keyof typeof AUDIT_ACTION_LABELS;
 
-export type AuditTargetType = "user" | "workspace" | "subscription" | "customer" | "plan" | "invoice" | "import";
+export type AuditTargetType = "user" | "workspace" | "subscription" | "customer" | "plan" | "invoice" | "import" | "api_key";
+
+/**
+ * Who an entry says acted: the member, or "API · <key name>" for a change made
+ * through the REST API (those carry the key and no actor), else `fallback`.
+ */
+export function auditActorLabel(
+  entry: {
+    readonly actor: { readonly name: string | null; readonly email: string } | null;
+    readonly apiKey: { readonly name: string } | null;
+  },
+  fallback: string,
+): string {
+  if (entry.actor !== null) return formatPersonName(entry.actor.name, entry.actor.email);
+  if (entry.apiKey !== null) return `API · ${entry.apiKey.name}`;
+  return fallback;
+}
 
 function isAuditAction(value: string): value is AuditAction {
   return Object.hasOwn(AUDIT_ACTION_LABELS, value);

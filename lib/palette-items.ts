@@ -3,8 +3,9 @@
  * theme choices — static data, rendered by components/dashboard/command-palette.tsx.
  *
  * Navigation is DERIVED from the sidebar's own list (nav-items.ts) so the two can
- * never disagree about where the app goes; only Profile is added, because it is a
- * settings tab rather than a sidebar entry.
+ * never disagree about where the app goes; only Profile and API keys are added,
+ * because they are settings tabs rather than sidebar entries, and the public API
+ * documentation.
  *
  * `roles` hides an item from anyone whose role in the active workspace is not
  * listed. That is presentation only — every destination and action re-checks the
@@ -12,7 +13,20 @@
  */
 import type { Role } from "@prisma/client";
 import type { ComponentType } from "react";
-import { CirclePlus, Mail, Monitor, Moon, ReceiptText, Sun, Tag, UserPlus, UserRound, Users } from "lucide-react";
+import {
+  BookOpen,
+  CirclePlus,
+  KeyRound,
+  Mail,
+  Monitor,
+  Moon,
+  ReceiptText,
+  Sun,
+  Tag,
+  UserPlus,
+  UserRound,
+  Users,
+} from "lucide-react";
 
 import { primaryNav, secondaryNav } from "@/components/dashboard/nav-items";
 import { THEME_LABELS, THEMES, type ThemePreference } from "@/lib/theme";
@@ -76,6 +90,22 @@ export const PALETTE_ITEMS: readonly PaletteItem[] = [
     label: "Profile",
     icon: UserRound,
     command: { kind: "navigate", href: "/dashboard/settings/profile" },
+  },
+  {
+    id: "nav-api-keys",
+    group: "Navigation",
+    label: "API keys",
+    icon: KeyRound,
+    command: { kind: "navigate", href: "/dashboard/settings/api-keys" },
+    roles: MANAGERS,
+  },
+  {
+    // The public reference — outside the dashboard, readable by anyone.
+    id: "nav-api-docs",
+    group: "Navigation",
+    label: "API documentation",
+    icon: BookOpen,
+    command: { kind: "navigate", href: "/docs/api" },
   },
   {
     id: "action-add-user",

@@ -20,7 +20,7 @@ import { redirect } from "next/navigation";
 import { Building2, ScrollText } from "lucide-react";
 
 import { getActiveOrgId } from "@/lib/active-org";
-import { auditActionLabel, auditDetails } from "@/lib/audit-view";
+import { auditActionLabel, auditActorLabel, auditDetails } from "@/lib/audit-view";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
@@ -28,7 +28,6 @@ import {
   formatCount,
   formatDay,
   formatEnumLabel,
-  formatPersonName,
   formatRelativeTime,
 } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -110,7 +109,7 @@ export default async function AuditLogPage() {
     where: { organizationId },
     orderBy: { createdAt: "desc" },
     take: ENTRY_LIMIT,
-    include: { actor: { select: { id: true, name: true, email: true } } },
+    include: { actor: { select: { id: true, name: true, email: true } }, apiKey: { select: { name: true } } },
   });
 
   // One instant for the whole list, so the labels cannot drift mid-render.
@@ -188,10 +187,8 @@ export default async function AuditLogPage() {
                       </TableCell>
 
                       <TableCell className="py-2.5">
-                        {entry.actor ? (
-                          <span className="font-medium text-foreground">
-                            {formatPersonName(entry.actor.name, entry.actor.email)}
-                          </span>
+                        {entry.actor || entry.apiKey ? (
+                          <span className="font-medium text-foreground">{auditActorLabel(entry, "System")}</span>
                         ) : (
                           <span className="text-muted-foreground">System</span>
                         )}

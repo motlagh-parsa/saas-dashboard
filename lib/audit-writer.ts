@@ -21,6 +21,8 @@ export async function writeAudit(data: {
   organizationId: string;
   /** The signed-in user who acted. Omitted for system-initiated entries. */
   actorId?: string;
+  /** The API key that made the change — REST API writes carry this and no actorId. */
+  apiKeyId?: string;
   action: AuditAction;
   targetType: AuditTargetType;
   targetId?: string;
@@ -33,6 +35,7 @@ export async function writeAudit(data: {
       data: {
         organizationId: data.organizationId,
         actorId: data.actorId ?? null,
+        apiKeyId: data.apiKeyId ?? null,
         action: data.action,
         targetType: data.targetType,
         targetId: data.targetId ?? null,

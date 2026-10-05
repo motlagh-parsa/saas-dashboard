@@ -14,7 +14,12 @@
 //   5. the Stripe-shaped fixture: its headers auto-map, amounts in cents;
 //   6. a file with bad rows: errors reported, the error report downloads — from
 //      the result and again from the history — with formulas neutralized;
-//   7. the run history, the audit entry and the importer's notification.
+//   7. the run history, the audit entry and the importer's notification;
+//   8. amounts like "1,500" make the wizard ask which decimal separator the
+//      file uses; a subscription changed in Meridian after import is refused on
+//      re-import; a run whose second chunk fails (a temporary trigger) shows
+//      "Import stopped part-way" with the first chunk kept, and "Failed" in the
+//      history.
 // As Bob, a MEMBER of the seeded workspace: no Import page or sidebar entry,
 // and calling the import actions directly is refused.
 // The fresh workspace (and everything in it) is deleted at the end.
@@ -62,6 +67,15 @@ const BAD = file(
     "sub_ok,cus_9,Nine Co,price_basic,2025-06-01,USD\n",
 );
 const STRIPE = resolve("scripts/fixtures/stripe-subscriptions-export.csv");
+// Every amount reads as a thousand or as one-and-a-half: the wizard must ask.
+const AMBIGUOUS = file("ambiguous-plans.csv", 'plan_id,name,amount,interval\nprice_big,Big,"1,500",month\nprice_bigger,Bigger,"2,250",month\n');
+// 501 customers: chunk one (500) is written, chunk two hits the trigger below.
+const FAIL_NAME = `E2E Fail Me ${stamp}`;
+const MANY = file(
+  "many-customers.csv",
+  "customer_id,name\n" + Array.from({ length: 500 }, (_, i) => `bulk_${i},Bulk ${i}\n`).join("") + `bulk_fail,${FAIL_NAME}\n`,
+);
+const TRIGGER = `e2e_fail_${stamp}`;
 
 /** Captures the next CSV the page hands to a download link. */
 const CAPTURE_CSV = `(() => {
@@ -98,6 +112,7 @@ async function importAnother() {
 }
 
 let organizationId = null;
+let triggerInstalled = false;
 
 try {
   // A fresh workspace for the run, owned by the demo user.
@@ -231,6 +246,86 @@ try {
   check("7. every import audited and notified to the importer", audit.n === 6 && notices.length === 6, `${audit.n} audit, ${notices.length} notifications`);
   check("7. the notification says what happened", notices.some((notice) => notice.body.includes("1 created, 2 errors")), notices.map((n) => n.body).join(" | "));
 
+  // 8a. The decimal question ----------------------------------------------------------------------------
+  await load("/dashboard/import");
+  await startImport("plans", AMBIGUOUS);
+  const asked = await evaluate(`({ blockers: document.querySelector('[data-testid="import-blockers"]')?.textContent ?? "",
+    legend: document.body.textContent.includes("values like 1,234 could be either; choose one"),
+    chosen: document.querySelector('input[name="decimal"]:checked')?.value ?? null })`);
+  check(
+    "8. “1,500” amounts: the wizard asks point or comma, nothing preselected, preview blocked",
+    asked.legend && asked.chosen === null && asked.blockers.includes("Choose how the amounts write decimals."),
+    JSON.stringify(asked),
+  );
+  await click("decimal point", `document.querySelector('input[name="decimal"][value="point"]')`);
+  await waitFor("unblocked", `!document.querySelector('[data-testid="import-blockers"]')`);
+  const ambiguous = await previewAndImport("ambiguous plans");
+  const big = await all(
+    `SELECT "externalId", "amountCents" FROM "Plan" WHERE "organizationId" = $1 AND "externalId" IN ('price_big', 'price_bigger') ORDER BY "externalId"`,
+    [organizationId],
+  );
+  check("8. chosen “point”: 1,500 is 1500.00 and 2,250 is 2250.00", ambiguous.done.created === 2 && big.map((row) => row.amountCents).join() === "150000,225000", JSON.stringify(big));
+  await importAnother();
+
+  // 8b. Changed in Meridian after import -----------------------------------------------------------------
+  const segment = await one(`SELECT id FROM "Subscription" WHERE "organizationId" = $1 AND "externalId" = 'sub_1:2025-02-01'`, [organizationId]);
+  const premium = await one(`SELECT id FROM "Plan" WHERE "organizationId" = $1 AND "externalId" = 'price_premium'`, [organizationId]);
+  const changeFields = {
+    organizationId,
+    subscriptionId: segment.id,
+    planId: premium.id,
+    price: "",
+    interval: "",
+    intervalCount: "",
+    quantity: "2",
+    effectiveDate: "2025-06-01",
+  };
+  const changed = await evaluate(`(async () => {
+    const body = new FormData();
+    for (const [k, v] of Object.entries(${JSON.stringify(changeFields)})) body.set("_1_" + k, v);
+    body.set("0", JSON.stringify([{ status: "idle", message: null, fieldErrors: {} }, "$K1"]));
+    const response = await fetch("/dashboard/revenue", { method: "POST", headers: { Accept: "text/x-component", "Next-Action": ${JSON.stringify(actionIdOf("changeSubscription"))} }, body });
+    return response.text();
+  })()`);
+  check("8. sub_1 upgraded in Meridian (the UI's Change plan action)", changed.includes('"status":"success"'), changed.slice(-160));
+  await load("/dashboard/import");
+  await startImport("subscriptions", SUBSCRIPTIONS);
+  await click("day first", `document.querySelector('input[name="dateOrder"][value="dmy"]')`);
+  await click("preview", `window.__e2e.byText("button", "Preview import")`);
+  await waitFor("preview", `!!document.querySelector('[data-testid="import-preview"] [data-testid="import-counts"]')`, 60_000);
+  const refused = { errors: await count("Errors"), unchanged: await count("Unchanged"), create: await count("Will create") };
+  const refusedText = await evaluate(`document.querySelector('[data-testid="import-preview"]').textContent.includes("changed in Meridian after it was imported")`);
+  check(
+    "8. re-importing a subscription changed in Meridian is refused, the others unchanged",
+    refused.errors === 1 && refused.unchanged === 2 && refused.create === 0 && refusedText,
+    JSON.stringify(refused),
+  );
+
+  // 8c. A run that fails part-way --------------------------------------------------------------------------
+  await all(`CREATE FUNCTION ${TRIGGER}() RETURNS trigger AS $$ BEGIN
+      IF NEW.name = '${FAIL_NAME}' THEN RAISE EXCEPTION 'e2e: forced failure'; END IF; RETURN NEW; END $$ LANGUAGE plpgsql`);
+  await all(`CREATE TRIGGER ${TRIGGER} BEFORE INSERT ON "Customer" FOR EACH ROW EXECUTE FUNCTION ${TRIGGER}()`);
+  triggerInstalled = true;
+  await load("/dashboard/import");
+  await startImport("customers", MANY);
+  const failed = await previewAndImport("failing run");
+  const screen = await evaluate(`document.querySelector('[data-testid="import-result"]').textContent`);
+  check(
+    "8. the failing run: “Import stopped part-way”, chunk one's 500 kept",
+    screen.includes("Import stopped part-way") && screen.includes("Chunks already written stay written") && failed.done.created === 500,
+    JSON.stringify(failed.done),
+  );
+  const bulk = (await one(`SELECT count(*)::int AS n FROM "Customer" WHERE "organizationId" = $1 AND "externalId" LIKE 'bulk_%'`, [organizationId])).n;
+  check("8. the database holds exactly the first chunk", bulk === 500, `${bulk}`);
+  await all(`DROP TRIGGER ${TRIGGER} ON "Customer"`);
+  await all(`DROP FUNCTION ${TRIGGER}()`);
+  triggerInstalled = false;
+  await load("/dashboard/import");
+  const badge = await evaluate(`window.__e2e.all('[data-testid="import-history"] tbody tr')[0]?.textContent ?? ""`);
+  check("8. the history shows the run as Failed", badge.includes("Failed") && badge.includes("many-customers.csv"), badge.replace(/\s+/g, " ").slice(0, 120));
+  const run = await one(`SELECT status FROM "ImportRun" WHERE "organizationId" = $1 AND "fileName" = 'many-customers.csv'`, [organizationId]);
+  check("8. the run is stored FAILED", run?.status === "FAILED", run?.status);
+
   // As Bob --------------------------------------------------------------------------------------------------
   const northwind = await one(`SELECT id FROM "Organization" WHERE slug = 'northwind-analytics'`);
   const bob = await one(`SELECT id, name, email FROM "User" WHERE email = 'bob@acme-demo.dev'`);
@@ -265,6 +360,10 @@ try {
 } catch (error) {
   fail(error);
 } finally {
+  if (triggerInstalled) {
+    await all(`DROP TRIGGER IF EXISTS ${TRIGGER} ON "Customer"`);
+    await all(`DROP FUNCTION IF EXISTS ${TRIGGER}()`);
+  }
   if (organizationId !== null) {
     await all(`DELETE FROM "Organization" WHERE id = $1`, [organizationId]);
     const left = (await one(`SELECT count(*)::int AS n FROM "Organization" WHERE id = $1`, [organizationId])).n;

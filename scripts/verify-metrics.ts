@@ -33,6 +33,7 @@
 import type { BillingInterval } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
+import { verifyApi } from "./verify-api";
 import { verifyBillingLifecycle } from "./verify-billing-ops";
 import { verifyImports } from "./verify-import";
 import {
@@ -354,6 +355,7 @@ async function main(): Promise<void> {
     created.push(await verifyRoundingInSql(stamp));
     created.push(...(await verifyBillingLifecycle(check, stamp)));
     created.push(...(await verifyImports(check, stamp)));
+    created.push(...(await verifyApi(check, stamp)));
   } finally {
     // By id only: the workspaces this run created, and their cascade.
     if (created.length > 0) {
