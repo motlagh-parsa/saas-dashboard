@@ -159,6 +159,12 @@ try {
   check("3. the invite link set the password", invitee?.hasPassword === true);
   check("3. … and counts as a confirmed address", invitee?.emailVerified !== null);
   check("3. the invitee can sign in", await canSignIn(inviteeEmail, inviteePassword));
+  const joined = await one(
+    `SELECT n.title FROM "Notification" n JOIN "Organization" o ON o.id = n."organizationId"
+     WHERE o.name = $1 AND n.type = 'MEMBER_JOINED'`,
+    [workspaceName],
+  );
+  check("3. the workspace is told the invitee joined", joined?.title === "E2E Invitee joined", joined?.title);
 
   // 4. Password reset -------------------------------------------------------------------------
   const oldSession = await signIn(founderEmail, password);

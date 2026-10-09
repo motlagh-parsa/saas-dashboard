@@ -68,6 +68,24 @@ export default function ProfileLoading() {
             <Skeleton className="h-11 w-36 rounded-lg sm:h-9" />
           </CardContent>
         </Card>
+
+        {/* Notifications: one row per kind, with its two switches. */}
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-3 w-28" />
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div key={index} className="flex items-center justify-between gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <Skeleton className="h-3.5 w-32" />
+                  <Skeleton className="h-2.5 w-64" />
+                </div>
+                <Skeleton className="h-4 w-24" />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       </div>
     </main>
   );

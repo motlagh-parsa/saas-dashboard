@@ -22,12 +22,19 @@ import { join } from "node:path";
 
 import { env, mailDriver } from "@/lib/env";
 
+export interface MailAttachment {
+  readonly filename: string;
+  /** The file's text (CSV); encoded for the provider here. */
+  readonly content: string;
+}
+
 export interface MailMessage {
   readonly to: string;
   readonly subject: string;
   /** Plain-text body — always sent, for clients that do not render HTML. */
   readonly text: string;
   readonly html: string;
+  readonly attachments?: readonly MailAttachment[];
 }
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
@@ -49,6 +56,14 @@ async function sendWithResend(message: MailMessage, apiKey: string): Promise<boo
         subject: message.subject,
         text: message.text,
         html: message.html,
+        ...(message.attachments?.length
+          ? {
+              attachments: message.attachments.map((attachment) => ({
+                filename: attachment.filename,
+                content: Buffer.from(attachment.content, "utf8").toString("base64"),
+              })),
+            }
+          : {}),
       }),
       signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });

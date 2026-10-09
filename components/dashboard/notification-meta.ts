@@ -10,6 +10,7 @@
 // import is erased at compile time, so nothing drags Prisma into the bundle.
 import type { ComponentType } from "react";
 import {
+  CalendarRange,
   Clock,
   Database,
   FileText,
@@ -56,6 +57,7 @@ export const TYPE_META: Record<NotificationType, NotificationTypeMeta> = {
   REPORT_READY: { icon: FileText, tone: "neutral" },
   IMPORT_FINISHED: { icon: FileUp, tone: "neutral" },
   SYSTEM: { icon: Database, tone: "neutral" },
+  WEEKLY_SUMMARY: { icon: CalendarRange, tone: "neutral" },
 };
 
 /**

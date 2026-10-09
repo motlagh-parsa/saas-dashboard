@@ -11,6 +11,7 @@
 // (`consumeInvite`), so a link cannot be used twice, even by two tabs at once.
 // Then it redirects to /sign-in: accepting does not sign anyone in, the same as
 // registering.
+import { after } from "next/server";
 import { redirect } from "next/navigation";
 
 import {
@@ -19,7 +20,10 @@ import {
   type AcceptInviteState,
 } from "@/lib/invite-schema";
 import { consumeInvite, lookupInvite } from "@/lib/invite-token";
+import { formatPersonName } from "@/lib/format";
+import { createNotification } from "@/lib/notification-writer";
 import { hashPassword } from "@/lib/password";
+import { prisma } from "@/lib/prisma";
 
 const INVALID_LINK = "This invite link is invalid or has expired.";
 
@@ -52,6 +56,24 @@ export async function acceptInvite(
     // Used or expired between the lookup and the write.
     return { status: "error", message: INVALID_LINK, fieldErrors: {} };
   }
+
+  // Tell each workspace the account belongs to that its new member is in.
+  const joined = invite.user;
+  after(async () => {
+    const memberships = await prisma.membership.findMany({
+      where: { user: { email: joined.email } },
+      select: { organizationId: true },
+    });
+    const name = formatPersonName(joined.name, joined.email);
+    for (const { organizationId } of memberships) {
+      await createNotification({
+        organizationId,
+        type: "MEMBER_JOINED",
+        title: `${name} joined`,
+        body: `${name} (${joined.email}) accepted their invite and set a password.`,
+      });
+    }
+  });
 
   // Outside any try: `redirect` throws by design.
   redirect("/sign-in?invited=1");

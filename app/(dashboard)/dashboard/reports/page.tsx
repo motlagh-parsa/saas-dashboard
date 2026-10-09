@@ -18,8 +18,10 @@
 //
 // The page stays a Server Component. Interactivity lives in three small client
 // islands, each owning only its own state:
-//   - `ScheduleReportDialog` — the header action and its dialog. Not live: saving
-//     is `aria-disabled` with a stated reason until a schedule model exists.
+//   - `ScheduleReportDialog` — the header action and its dialog. Saves a real
+//     ReportSchedule; the daily job emails the CSV to whoever scheduled it.
+//     Hidden when the deployment sends no email. The person's own schedules are
+//     listed under the cards, each with Stop (`ReportSchedulesList`).
 //   - `ReportCard`           — "Generate" records a REAL `ReportRun` via POST
 //     /api/reports/[reportId]/generate, and the footer reads "Just now".
 //   - `ExportDownloadButton` — a REAL CSV of the workspace's metrics, fetched from
@@ -31,7 +33,9 @@ import type { Metadata } from "next";
 
 import { getActiveOrgId } from "@/lib/active-org";
 import { requireSession } from "@/lib/auth";
-import { formatCount, formatRelativeTime } from "@/lib/format";
+import { isMailEnabled } from "@/lib/env";
+import { SCHEDULE_FREQUENCIES } from "@/lib/report-schedule-form";
+import { formatCount, formatDay, formatRelativeTime } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 import { Card, CardAction, CardFooter, CardHeader } from "@/components/ui/card";
@@ -42,6 +46,7 @@ import {
   type ExportFormat,
 } from "@/components/dashboard/report-catalogue";
 import { ScheduleReportDialog } from "@/components/dashboard/schedule-report-dialog";
+import { ReportSchedulesList, type ScheduleRow } from "@/components/dashboard/report-schedules-list";
 import {
   Table,
   TableBody,
@@ -140,11 +145,27 @@ export default async function ReportsPage() {
 
   // No workspace means no runs — every card keeps its catalogue copy, the register
   // shows its empty row, and "Generate" answers with the route's own 403 message.
-  const [lastRuns, recentRuns] =
+  const [lastRuns, recentRuns, schedules, account] =
     organizationId === null
-      ? [new Map<string, Date>(), []]
-      : await Promise.all([getLastRuns(organizationId), getRecentRuns(organizationId)]);
+      ? [new Map<string, Date>(), [], [], null]
+      : await Promise.all([
+          getLastRuns(organizationId),
+          getRecentRuns(organizationId),
+          // The caller's own schedules only — each mails its creator.
+          prisma.reportSchedule.findMany({
+            where: { organizationId, userId: session.user.id },
+            orderBy: { createdAt: "asc" },
+            select: { id: true, reportId: true, frequency: true, nextRunAt: true },
+          }),
+          prisma.user.findUnique({ where: { id: session.user.id }, select: { email: true } }),
+        ]);
   const now = new Date();
+  const scheduleRows: ScheduleRow[] = schedules.map((schedule) => ({
+    id: schedule.id,
+    reportName: REPORTS.find((report) => report.id === schedule.reportId)?.name ?? schedule.reportId,
+    frequencyLabel: SCHEDULE_FREQUENCIES.find((entry) => entry.value === schedule.frequency)?.label ?? schedule.frequency,
+    nextSend: formatDay(schedule.nextRunAt),
+  }));
 
   return (
     <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -155,9 +176,9 @@ export default async function ReportsPage() {
             Exportable summaries of your workspace metrics
           </p>
         </div>
-        {/* Pre-filled with the signed-in user's own address. A provider may
-            withhold it, in which case the field starts empty. */}
-        <ScheduleReportDialog defaultEmail={session.user.email ?? ""} />
+        {isMailEnabled && organizationId !== null && account !== null ? (
+          <ScheduleReportDialog organizationId={organizationId} email={account.email} />
+        ) : null}
       </header>
 
       {/*
@@ -202,6 +223,20 @@ export default async function ReportsPage() {
           );
         })}
       </section>
+
+      {scheduleRows.length > 0 && account !== null ? (
+        <section className="rise [animation-delay:90ms]">
+          <Card className="gap-0 py-0">
+            <CardHeader className="border-b border-border pt-4">
+              <div className="flex flex-col gap-1">
+                <h2 className={EYEBROW}>Your schedules</h2>
+                <p className={FOOTNOTE}>Emailed to you as CSV files. Only you see and manage these.</p>
+              </div>
+            </CardHeader>
+            <ReportSchedulesList schedules={scheduleRows} email={account.email} />
+          </Card>
+        </section>
+      ) : null}
 
       {/*
         The register runs edge to edge inside its card: `py-0` lets the table's own

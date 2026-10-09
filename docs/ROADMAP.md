@@ -17,15 +17,9 @@ Each step ships as its own pull request. A step is done when every item under
 | 4 | CSV import (customers, plans, subscriptions with history, invoices), preview, idempotent re-import |
 | 5 | Public REST API v1 with API keys, rate limits, OpenAPI document and docs page |
 | 6 | Email: confirmation, password reset with session revocation, invite emails (Resend or a local mailbox) |
+| 7 | Alerts (churn, revenue dips, overdue invoices, MRR milestones), weekly summary, notification preferences, scheduled report emails, landing page, no placeholder content |
 
 ## Remaining
-
-### 7 — Notifications and the last placeholder content
-- Notifications produced by real events: MRR milestones, churn of a customer above a threshold, failed/uncollectible invoices, import and sync results, weekly summary.
-- Per-user notification preferences (in-app, and email once step 6 exists).
-- Scheduled reports become real (emailed on schedule) or are removed — no "coming soon".
-- The sign-in panel's invented figures are replaced, and `/` becomes a real landing page.
-- **Done when:** nothing in the product shows placeholder or invented content, verified by an e2e pass over every page.
 
 ### 8 — Stripe sync
 - Connect with a restricted read-only key; validated, encrypted at rest.
