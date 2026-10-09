@@ -87,7 +87,10 @@ export function SignInForm({
         </p>
       ) : null}
 
-      <form onSubmit={onCredentialsSubmit} className="flex flex-col gap-4">
+      {/* method="post": if the form is submitted before the page's JavaScript
+          has loaded, the browser posts it instead of the default GET — which
+          would put the email and password in the URL, the history and logs. */}
+      <form method="post" onSubmit={onCredentialsSubmit} className="flex flex-col gap-4">
         <div className="flex flex-col gap-2">
           <Label htmlFor="email">Email</Label>
           <Input
