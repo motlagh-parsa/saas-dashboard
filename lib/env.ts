@@ -62,6 +62,19 @@ const envSchema = z.object({
     z.string().min(1).optional(),
   ),
 
+  // Encrypts secrets stored in the database (Stripe keys — lib/secret-box.ts):
+  // 32 random bytes, base64. Optional: without it a key is derived from
+  // NEXTAUTH_SECRET, which then must never change once Stripe is connected.
+  ENCRYPTION_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .refine((value) => Buffer.from(value, "base64").length === 32, "ENCRYPTION_KEY must be 32 bytes, base64 (openssl rand -base64 32)")
+      .optional(),
+  ),
+  // Where Stripe's API is. Only ever changed to point tests at a local fake.
+  STRIPE_API_BASE: z.string().url().default("https://api.stripe.com"),
+
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),

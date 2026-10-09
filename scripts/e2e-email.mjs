@@ -89,6 +89,9 @@ try {
   check("1. registering sends a confirmation email", true, confirmMail.subject);
   check("1. it is addressed to the founder by name", confirmMail.text.includes("Hi E2E Mail Founder,"));
 
+  // A fresh load: the sign-up's client navigation may still be refreshing the
+  // page, which would reset the form under the values typed into it.
+  await load("/onboarding");
   await whenInteractive('input[name="name"]');
   await evaluate(`(() => {
     window.__e2e.set(document.querySelector('input[name="name"]'), ${JSON.stringify(workspaceName)});

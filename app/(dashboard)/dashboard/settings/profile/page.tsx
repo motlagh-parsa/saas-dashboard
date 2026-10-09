@@ -75,7 +75,7 @@ export default async function ProfilePage() {
             your account, in every workspace
           </p>
         </div>
-        <SettingsTabs current="profile" showApiKeys={membership !== null && membership.role !== "MEMBER"} />
+        <SettingsTabs current="profile" showManagerTabs={membership !== null && membership.role !== "MEMBER"} />
       </header>
 
       <section className="rise mt-3 [animation-delay:60ms]">

@@ -299,8 +299,11 @@ export async function createWorkspace(
   );
 
   revalidatePath("/", "layout");
-  // Outside any try: `redirect` throws by design.
-  redirect("/onboarding");
+  // Outside any try: `redirect` throws by design. The workspace id in the URL
+  // makes the target differ from the page the form is on (step 1 is also
+  // /onboarding): a redirect to the very same URL was intermittently not
+  // followed, leaving step 1 on screen over a workspace that already existed.
+  redirect(`/onboarding?workspace=${workspace.id}`);
 }
 
 /**

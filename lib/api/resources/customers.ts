@@ -89,7 +89,7 @@ export async function putCustomer(
     select: { id: true, name: true, email: true, archivedAt: true },
   });
   if (existing === null) {
-    applied(ctx, await createCustomerOp(organizationId, { name: input.name, email: input.email ?? null }, { source: "API", externalId }));
+    applied(ctx, await createCustomerOp(organizationId, { name: input.name, email: input.email ?? null }, { source: ctx.source, externalId }));
     return { created: true, changed: true, record: await getCustomer(ctx, externalId) };
   }
 

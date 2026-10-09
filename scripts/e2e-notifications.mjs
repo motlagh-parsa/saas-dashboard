@@ -46,6 +46,7 @@ const PAGES = [
   "/dashboard/settings",
   "/dashboard/settings/profile",
   "/dashboard/settings/api-keys",
+  "/dashboard/settings/integrations",
 ];
 
 const demo = await one(`SELECT id, email FROM "User" WHERE email = $1`, [process.env.DEMO_EMAIL]);

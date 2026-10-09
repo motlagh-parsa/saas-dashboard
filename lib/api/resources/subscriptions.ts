@@ -268,7 +268,7 @@ export async function putSubscription(
           effectiveDate,
         },
         now,
-        { source: "API", externalId: segmentExternalId(externalId, effectiveDate) },
+        { source: ctx.source, externalId: segmentExternalId(externalId, effectiveDate) },
       ),
       CHANGE_PARAMS,
     );
@@ -331,7 +331,7 @@ async function createChain(
         recordPastInvoices: false,
       },
       now,
-      { source: "API", externalId: segmentExternalId(externalId, input.start_date) },
+      { source: ctx.source, externalId: segmentExternalId(externalId, input.start_date) },
     ),
     { customerId: "customer_external_id", planId: "plan_external_id", price: "amount", quantity: "quantity" },
   );
