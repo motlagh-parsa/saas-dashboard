@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: saas_dashboard
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/saas_dashboard?sslmode=disable
+      NEXTAUTH_URL: http://localhost:3000
+      DEMO_EMAIL: demo@saas-dashboard.dev
+      # Throwaway values for this job's own database and server; nothing real.
+      DEMO_PASSWORD: ci-demo-password
+      NEXTAUTH_SECRET: ci-only-nextauth-secret-not-used-anywhere-else
+      CRON_SECRET: ci-only-cron-secret-0123456789abcdef
+      CHROME_PATH: /usr/bin/google-chrome
+      E2E_BUILD: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Schema matches migrations (no drift)
+        run: npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
+
+      - name: Seed
+        run: npx prisma db seed
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npx eslint
+
+      - name: Metrics, billing, import and API verification
+        run: npm run verify:metrics
+
+      - name: Build
+        run: npm run build
+
+      - name: Start server
+        run: |
+          npm run start -- -p 3000 > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf -o /dev/null http://localhost:3000/sign-in && exit 0
+            sleep 1
+          done
+          echo "server did not start"; cat server.log; exit 1
+
+      - name: End-to-end
+        run: |
+          npm run e2e:onboarding
+          npm run e2e:billing
+          npm run e2e:import
+          npm run e2e:api
+
+      - name: Server log
+        if: failure()
+        run: cat server.log

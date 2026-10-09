@@ -3,7 +3,7 @@
 // and a tiny check/report — Node 22 built-ins plus packages the app already has
 // (pg, next-auth). No test framework.
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,9 +104,22 @@ export function mintSession(user) {
   });
 }
 
-/** Dev builds list each Server Action's id beside its export name in the client chunks. */
+/**
+ * A Server Action's id from its export name. Against `next dev` (the default)
+ * the ids sit beside their names in the dev client chunks. Against `next start`
+ * set E2E_BUILD=production (CI does): they come from the build's server
+ * reference manifest instead.
+ */
 export function actionIdOf(name) {
+  const manifestPath = ".next/server/server-reference-manifest.json";
+  if (process.env.E2E_BUILD === "production") {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    for (const [id, entry] of Object.entries(manifest.node ?? {})) {
+      if (entry.exportedName === name) return id;
+    }
+  }
   const chunkDir = ".next/dev/static/chunks";
+  if (!existsSync(chunkDir)) return null;
   const pattern = new RegExp(`"([0-9a-f]{40,})":\\{"name":"${name}"\\}`);
   for (const file of readdirSync(chunkDir)) {
     if (!file.endsWith(".js")) continue;
@@ -154,6 +167,8 @@ export async function launchBrowser({ port }) {
     "--no-first-run",
     "--no-default-browser-check",
     "--window-size=1440,1000",
+    // Chrome refuses to start as root without this — the case in CI containers.
+    ...(process.getuid?.() === 0 ? ["--no-sandbox"] : []),
     "about:blank",
   ]);
 
@@ -224,8 +239,13 @@ export async function launchBrowser({ port }) {
   async function click(label, elementExpression) {
     const box = await waitFor(
       label,
+      // Waits until nothing covers the element's centre (a toast from the
+      // previous step, a closing dialog), so the click lands on it.
       `(() => { const el = ${elementExpression}; if (!el) return null; el.scrollIntoView({ block: "center" });
-        const r = el.getBoundingClientRect(); return r.width > 0 ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null; })()`,
+        const r = el.getBoundingClientRect(); if (r.width === 0) return null;
+        const x = r.x + r.width / 2, y = r.y + r.height / 2;
+        const top = document.elementFromPoint(x, y);
+        return top && (el === top || el.contains(top)) ? { x, y } : null; })()`,
     );
     for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
       await send("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 1 });
