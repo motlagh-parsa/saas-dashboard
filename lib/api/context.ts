@@ -27,14 +27,21 @@ export class WriteEffects {
 
 export interface ApiWriteContext {
   readonly organizationId: string;
+  /** Recorded on every row the write creates: the REST API, or the Stripe sync (lib/stripe/sync.ts). */
+  readonly source: "API" | "STRIPE";
   /** The workspace currency — every amount in and out is in its minor units. */
   readonly currency: string;
   readonly now: Date;
   readonly effects: WriteEffects;
 }
 
-export function writeContext(organizationId: string, currency: string, now: Date = new Date()): ApiWriteContext {
-  return { organizationId, currency, now, effects: new WriteEffects() };
+export function writeContext(
+  organizationId: string,
+  currency: string,
+  now: Date = new Date(),
+  source: "API" | "STRIPE" = "API",
+): ApiWriteContext {
+  return { organizationId, source, currency, now, effects: new WriteEffects() };
 }
 
 const STALE_PREFIX = "This page is out of date";

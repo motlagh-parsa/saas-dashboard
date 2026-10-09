@@ -85,6 +85,9 @@ try {
   check("1. registration created the user only — no workspace", user !== undefined && (await one(`SELECT count(*)::int AS n FROM "Membership" WHERE "userId" = $1`, [user.id])).n === 0);
 
   // 2. Create a workspace in EUR -------------------------------------------------------
+  // A fresh load: the sign-up's client navigation may still be refreshing the
+  // page, which would reset the form under the values typed into it.
+  await load("/onboarding");
   await whenInteractive('input[name="name"]');
   await evaluate(`(() => {
     window.__e2e.set(document.querySelector('input[name="name"]'), ${JSON.stringify(firstName)});

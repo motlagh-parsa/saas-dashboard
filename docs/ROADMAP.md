@@ -18,14 +18,9 @@ Each step ships as its own pull request. A step is done when every item under
 | 5 | Public REST API v1 with API keys, rate limits, OpenAPI document and docs page |
 | 6 | Email: confirmation, password reset with session revocation, invite emails (Resend or a local mailbox) |
 | 7 | Alerts (churn, revenue dips, overdue invoices, MRR milestones), weekly summary, notification preferences, scheduled report emails, landing page, no placeholder content |
+| 8 | Stripe sync: restricted read-only key (encrypted at rest), full and nightly sync through the API's own rules, signed webhooks for live updates |
 
 ## Remaining
-
-### 8 — Stripe sync
-- Connect with a restricted read-only key; validated, encrypted at rest.
-- Initial backfill and incremental sync of customers, prices, subscriptions (with history) and invoices through the same lib functions as the importer and the API.
-- Webhook endpoint with signature verification for live updates; manual "Sync now".
-- **Done when:** tested against a local fake Stripe server with recorded fixtures; sync is idempotent.
 
 ### 9 — Production readiness
 - Build runs `prisma generate` and `prisma migrate deploy`; pooled connection string for serverless.
@@ -41,3 +36,4 @@ Each step ships as its own pull request. A step is done when every item under
 ## Known issues
 
 - **Settings → currency:** in roughly one save in six the "Amounts are now in …" confirmation does not appear, although the change is saved (the field shows the new value after a reload). Seen in a production build under e2e load; cause not yet isolated.
+- **Stripe sync limits:** up to 5,000 of each object per run; discounts and coupons are not applied (list prices are used); a subscription item removed from a multi-item subscription in Stripe is not ended in Meridian until its subscription ends; weekly/daily, metered and tiered prices are skipped and listed.

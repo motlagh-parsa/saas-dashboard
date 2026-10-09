@@ -26,6 +26,7 @@ import { getWorkspaceDataState } from "@/lib/workspace-status";
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { ApiSlot } from "@/components/billing/api-slot";
 import { ImportSlot } from "@/components/billing/import-slot";
+import { StripeSlot } from "@/components/billing/stripe-slot";
 import { CreateWorkspaceForm } from "@/components/workspace/create-workspace-form";
 import { LoadSampleDataButton } from "@/components/workspace/sample-data-controls";
 
@@ -141,6 +142,7 @@ export default async function OnboardingPage() {
 
         <ImportSlot variant="card" />
         <ApiSlot />
+        <StripeSlot className="sm:col-span-2" />
       </div>
 
       <p className="mt-6 text-sm">

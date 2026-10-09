@@ -90,7 +90,7 @@ export default async function ApiKeysPage() {
         <h1 className="font-heading text-xl font-semibold tracking-tight">API keys</h1>
         <p className="mt-1 text-[0.8125rem] text-muted-foreground">{membership.organization.name}</p>
       </div>
-      <SettingsTabs current="api-keys" showApiKeys={canManage} />
+      <SettingsTabs current="api-keys" showManagerTabs={canManage} />
     </header>
   );
 

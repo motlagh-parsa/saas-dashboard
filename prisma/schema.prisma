@@ -54,6 +54,8 @@ model User {
   notificationPreferences NotificationPreference[]
   /// Reports this user scheduled to be emailed to themselves.
   reportSchedules ReportSchedule[]
+  /// Stripe connections this user set up.
+  stripeConnections StripeConnection[]
 }
 
 /// One user's choice for one notification type. Only overrides are stored; a
@@ -195,6 +197,37 @@ model Organization {
   apiKeys       ApiKey[]
   reportSchedules ReportSchedule[]
   alertMarks      AlertMark[]
+  stripeConnection StripeConnection?
+}
+
+/// A workspace's link to its Stripe account (lib/stripe/*). The restricted key
+/// and the webhook signing secret are stored encrypted (lib/secret-box.ts) —
+/// never in plain text, and never sent back to the browser.
+model StripeConnection {
+  id                     String    @id @default(cuid())
+  organizationId         String    @unique
+  /// AES-256-GCM ciphertext of the restricted API key.
+  encryptedKey           String
+  /// The key's last four characters, to recognise it in the UI.
+  keyHint                String
+  livemode               Boolean
+  /// AES-256-GCM ciphertext of the webhook signing secret (whsec_…), once set.
+  encryptedWebhookSecret String?
+  /// "idle" | "running" — a sync claims the connection by flipping this.
+  syncState              String    @default("idle")
+  syncStartedAt          DateTime?
+  lastSyncAt             DateTime?
+  /// Counts from the last run: created / updated / unchanged / skipped per kind.
+  lastSyncSummary        Json?
+  lastSyncError          String?
+  lastWebhookAt          DateTime?
+  createdById            String?
+  createdAt              DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([createdById])
 }
 
 model Membership {

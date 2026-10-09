@@ -38,6 +38,8 @@ jobs:
       CHROME_PATH: /usr/bin/google-chrome
       # The local mail driver, so the e2e run can read the emails it triggers.
       MAIL_DEV_DIR: /tmp/meridian-mail
+      # The fake Stripe (scripts/fake-stripe.mjs) the app syncs from in e2e.
+      STRIPE_API_BASE: http://127.0.0.1:12111
       E2E_BUILD: production
 
     steps:
@@ -74,8 +76,9 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Start server
+      - name: Start fake Stripe and the server
         run: |
+          node scripts/fake-stripe.mjs > fake-stripe.log 2>&1 &
           npm run start -- -p 3000 > server.log 2>&1 &
           for i in $(seq 1 60); do
             curl -sf -o /dev/null http://localhost:3000/sign-in && exit 0
@@ -91,6 +94,7 @@ jobs:
           npm run e2e:api
           npm run e2e:email
           npm run e2e:notifications
+          npm run e2e:stripe
 
       - name: Server log
         if: failure()

@@ -21,6 +21,7 @@ import {
   Monitor,
   Moon,
   ReceiptText,
+  RefreshCcw,
   Sun,
   Tag,
   UserPlus,
@@ -97,6 +98,14 @@ export const PALETTE_ITEMS: readonly PaletteItem[] = [
     label: "API keys",
     icon: KeyRound,
     command: { kind: "navigate", href: "/dashboard/settings/api-keys" },
+    roles: MANAGERS,
+  },
+  {
+    id: "nav-integrations",
+    group: "Navigation",
+    label: "Integrations (Stripe)",
+    icon: RefreshCcw,
+    command: { kind: "navigate", href: "/dashboard/settings/integrations" },
     roles: MANAGERS,
   },
   {

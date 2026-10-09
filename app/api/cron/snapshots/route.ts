@@ -33,6 +33,7 @@ import { NextResponse } from "next/server";
 import { evaluateAlerts, sendWeeklySummary } from "@/lib/alerts";
 import { env } from "@/lib/env";
 import { runDueSchedules, type ScheduleRunResult } from "@/lib/report-schedules";
+import { runStripeSync } from "@/lib/stripe/sync";
 import { prisma } from "@/lib/prisma";
 import { DAY_MS, utcDayStart } from "@/lib/snapshot-formula";
 import { recomputeSnapshots, settleEndedSegments } from "@/lib/snapshots";
@@ -63,6 +64,8 @@ interface SnapshotJobResult {
   /** Notifications raised by alerts and weekly summaries. */
   readonly alerts: number;
   readonly reports: ScheduleRunResult;
+  /** Stripe connections synced, and how many of those failed. */
+  readonly stripe: { readonly synced: number; readonly failed: number };
   readonly failures: readonly CronFailure[];
 }
 
@@ -139,6 +142,15 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   const reports = await runDueSchedules(now);
 
+  // The nightly Stripe safety net: picks up anything a webhook missed.
+  const stripe = { synced: 0, failed: 0 };
+  const connections = await prisma.stripeConnection.findMany({ select: { organizationId: true } });
+  for (const connection of connections) {
+    const outcome = await runStripeSync(connection.organizationId);
+    if (outcome.kind === "done") stripe.synced += 1;
+    else if (outcome.kind === "failed") stripe.failed += 1;
+  }
+
   const result: SnapshotJobResult = {
     workspaces: workspaces.length,
     processed,
@@ -147,6 +159,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     through: isoDay(today),
     alerts,
     reports,
+    stripe,
     failures,
   };
   return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
