@@ -92,6 +92,7 @@ export function UserRowActions({
   const canChangeRole = assignableRoles.length > 0;
   // The new link, once the server has issued it. Its presence opens the dialog.
   const [resentToken, setResentToken] = useState<string | null>(null);
+  const [resentTo, setResentTo] = useState<string | null>(null);
 
   /**
    * Wraps an action so success and refusal both surface as a toast. Closing
@@ -130,6 +131,7 @@ export function UserRowActions({
       const result = await resendInvite(previous, formData);
       if (result.status === "success" && result.token !== null) {
         setResentToken(result.token);
+        setResentTo(result.emailedTo);
       } else if (result.status === "error") {
         toast.error("Could not resend invite", { description: result.message ?? undefined });
       }
@@ -264,7 +266,11 @@ export function UserRowActions({
           {resentToken !== null ? (
             <InviteLinkPanel
               title={`New invite for ${displayName}`}
-              description="Share this link with the user. It expires in 7 days, and the previous link no longer works."
+              description={
+                resentTo !== null
+                  ? `We've emailed a new invite to ${resentTo}. You can also share this link yourself. It expires in 7 days, and the previous link no longer works.`
+                  : "Share this link with the user. It expires in 7 days, and the previous link no longer works."
+              }
               token={resentToken}
             />
           ) : null}

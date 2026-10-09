@@ -60,6 +60,48 @@ export function createChecks() {
 }
 
 // ---------------------------------------------------------------------------
+// Mail — the app's local mail driver (lib/mail.ts) writes one JSON file per
+// message here; the server and these scripts run on the same machine.
+// ---------------------------------------------------------------------------
+
+export function mailboxDir() {
+  return process.env.MAIL_DEV_DIR || join(tmpdir(), "meridian-mail");
+}
+
+/** Every message sent to `to`, oldest first: { to, subject, text, html, sentAt }. */
+export function readMailbox(to) {
+  let files;
+  try {
+    files = readdirSync(mailboxDir()).filter((file) => file.endsWith(".json")).sort();
+  } catch {
+    return [];
+  }
+  return files
+    .map((file) => JSON.parse(readFileSync(join(mailboxDir(), file), "utf8")))
+    .filter((mail) => mail.to === to);
+}
+
+/** Waits for the newest message to `to` matching `subject`, and returns it. */
+export async function waitForMail(to, subject, { after = 0, timeoutMs = 20_000 } = {}) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const mail = readMailbox(to)
+      .filter((m) => m.subject.includes(subject) && Date.parse(m.sentAt) >= after)
+      .at(-1);
+    if (mail) return mail;
+    await sleep(200);
+  }
+  throw new Error(`no "${subject}" email to ${to}`);
+}
+
+/** The path (with token) of the first link in a message to `/${prefix}/…`. */
+export function linkPath(mail, prefix) {
+  const match = new RegExp(`https?://[^/\\s]+(/${prefix}/[0-9a-f]{64})`).exec(mail.text);
+  if (!match) throw new Error(`no /${prefix}/ link in "${mail.subject}"`);
+  return match[1];
+}
+
+// ---------------------------------------------------------------------------
 // Database and sessions
 // ---------------------------------------------------------------------------
 
@@ -274,6 +316,19 @@ export async function launchBrowser({ port }) {
     }
   }
 
+  /**
+   * Waits until React has attached to the element matching `selector` (its
+   * props key is on the node). Values set or clicks made before that are lost
+   * on hydration, or swallowed by a form's guard — a source of flaky runs.
+   */
+  async function whenInteractive(selector, timeoutMs = 30_000) {
+    await waitFor(
+      `${selector} to be interactive`,
+      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return !!el && Object.keys(el).some((k) => k.startsWith("__reactProps")); })()`,
+      timeoutMs,
+    );
+  }
+
   /** Submits the open dialog and waits for it to close (success) — or reports its error. */
   async function submitDialog(label) {
     await click(`${label}: submit`, `window.__e2e.dialog()?.querySelector('button[type="submit"]')`);
@@ -315,6 +370,7 @@ export async function launchBrowser({ port }) {
     setSession,
     submitDialog,
     uploadFile,
+    whenInteractive,
     closeDialog,
     close() {
       ws.close();

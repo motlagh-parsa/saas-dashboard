@@ -10,6 +10,9 @@
 // to /onboarding to create a workspace, since every page below is scoped to one.
 // Invited users already have a membership and never see it.
 //
+// An account that signs in with a password and has not confirmed its address
+// gets the confirmation banner (lib/account-email.ts decides who needs one).
+//
 // It also reads what the ACTIVE workspace holds (lib/workspace-status.ts): the
 // sample-data banner shows while it has SAMPLE rows, and the sidebar's metrics
 // status reports how fresh its snapshots are.
@@ -26,6 +29,7 @@ import { getServerSession } from "next-auth/next";
 
 import type { Notification } from "@prisma/client";
 
+import { needsEmailVerification } from "@/lib/account-email";
 import { getActiveOrgId } from "@/lib/active-org";
 import { authOptions } from "@/lib/auth";
 import { currencyOptions } from "@/lib/currencies";
@@ -49,6 +53,7 @@ import { ThemeToggle } from "@/components/dashboard/theme-toggle";
 import { UserMenu } from "@/components/dashboard/user-menu";
 import { MetricsStatus } from "@/components/workspace/metrics-status";
 import { SampleDataBanner } from "@/components/workspace/sample-data-banner";
+import { VerifyEmailBanner } from "@/components/auth/verify-email-banner";
 
 /** How many rows the bell shows before deferring to the full page. */
 const BELL_LIMIT = 5;
@@ -77,7 +82,7 @@ export default async function DashboardLayout({
         getActiveOrgId(userId),
         prisma.user.findUnique({
           where: { id: userId },
-          select: { name: true, email: true, image: true },
+          select: { name: true, email: true, image: true, passwordHash: true, emailVerified: true },
         }),
       ])
     : [[], null, null];
@@ -178,6 +183,8 @@ export default async function DashboardLayout({
             />
           </div>
         </header>
+
+        {account !== null && needsEmailVerification(account) ? <VerifyEmailBanner email={account.email} /> : null}
 
         {activeOrgId !== null && dataState?.hasSampleData ? (
           <SampleDataBanner organizationId={activeOrgId} canRemove={activeRole !== null && activeRole !== "MEMBER"} />

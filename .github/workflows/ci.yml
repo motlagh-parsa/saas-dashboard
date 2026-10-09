@@ -36,6 +36,8 @@ jobs:
       NEXTAUTH_SECRET: ci-only-nextauth-secret-not-used-anywhere-else
       CRON_SECRET: ci-only-cron-secret-0123456789abcdef
       CHROME_PATH: /usr/bin/google-chrome
+      # The local mail driver, so the e2e run can read the emails it triggers.
+      MAIL_DEV_DIR: /tmp/meridian-mail
       E2E_BUILD: production
 
     steps:
@@ -87,6 +89,7 @@ jobs:
           npm run e2e:billing
           npm run e2e:import
           npm run e2e:api
+          npm run e2e:email
 
       - name: Server log
         if: failure()

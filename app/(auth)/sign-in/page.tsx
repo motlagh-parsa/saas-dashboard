@@ -5,7 +5,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CircleCheck } from "lucide-react";
 
-import { isGithubEnabled } from "@/lib/env";
+import { isGithubEnabled, isMailEnabled } from "@/lib/env";
 import { SignInForm } from "@/components/auth/sign-in-form";
 
 export const metadata: Metadata = {
@@ -19,11 +19,12 @@ type SignInPageProps = {
     error?: string;
     registered?: string;
     invited?: string;
+    reset?: string;
   }>;
 };
 
 export default async function SignInPage({ searchParams }: SignInPageProps) {
-  const { callbackUrl, error, registered, invited } = await searchParams;
+  const { callbackUrl, error, registered, invited, reset } = await searchParams;
 
   return (
     <div className="w-full max-w-sm">
@@ -61,10 +62,22 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
         </p>
       ) : null}
 
+      {/* Set by `resetPassword` on success — same contract as `registered`. */}
+      {reset === "1" ? (
+        <p
+          role="status"
+          className="mt-6 flex items-start gap-2 rounded-md border border-positive/25 bg-positive/10 px-3 py-2.5 text-sm text-positive"
+        >
+          <CircleCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>Password changed, and every other session signed out. Sign in with your new password.</span>
+        </p>
+      ) : null}
+
       <div className="mt-6">
         <SignInForm
           callbackUrl={callbackUrl ?? "/dashboard"}
           githubEnabled={isGithubEnabled}
+          passwordResetEnabled={isMailEnabled}
           initialError={error}
         />
       </div>
