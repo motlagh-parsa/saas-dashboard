@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { Geist, Geist_Mono, Space_Grotesk } from "next/font/google";
 import { ToastRegion } from "@/components/dashboard/toast-region";
+import { WebVitals } from "@/components/web-vitals";
 import { THEME_COOKIE, parseTheme, themeClass } from "@/lib/theme";
 import "./globals.css";
 
@@ -53,6 +54,7 @@ export default async function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <ToastRegion />
+        <WebVitals />
         {children}
       </body>
     </html>

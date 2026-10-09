@@ -10,6 +10,7 @@ import { z } from "zod";
 import { requireSession } from "@/lib/auth";
 import { isMailEnabled } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
+import { demoRefusal } from "@/lib/demo";
 import { scheduleSchema, type ScheduleState } from "@/lib/report-schedule-form";
 import { nextRunAfter } from "@/lib/report-schedules";
 
@@ -24,6 +25,8 @@ function failure(message: string | null, fieldErrors: ScheduleState["fieldErrors
 export async function createReportSchedule(_previous: ScheduleState, formData: FormData): Promise<ScheduleState> {
   const session = await requireSession();
   if (!isMailEnabled) return failure("This deployment doesn't send email, so reports can't be scheduled.");
+  const demo = await demoRefusal(session.user.id);
+  if (demo !== null) return failure(demo);
 
   const organizationId = formData.get("organizationId");
   if (typeof organizationId !== "string" || !ID_PATTERN.test(organizationId)) return failure(STALE_PAGE);

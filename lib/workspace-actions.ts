@@ -36,6 +36,7 @@ import { readForm, type BillingFormState } from "@/lib/billing-form";
 import { parseForm } from "@/lib/billing-caller";
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
+import { demoRefusal } from "@/lib/demo";
 import type { WorkspaceActionState } from "@/lib/workspace-action-state";
 import {
   CREATE_WORKSPACE_FIELDS,
@@ -146,6 +147,8 @@ export async function leaveWorkspace(
 ): Promise<WorkspaceActionState> {
   const caller = await callerMembership(formData);
   if (caller === null) return failure(STALE_PAGE);
+  const demo = await demoRefusal(caller.userId);
+  if (demo !== null) return failure(demo);
 
   const key = {
     userId_organizationId: { userId: caller.userId, organizationId: caller.organizationId },
@@ -259,6 +262,8 @@ export async function createWorkspace(
   formData: FormData,
 ): Promise<BillingFormState> {
   const session = await requireSession();
+  const demo = await demoRefusal(session.user.id);
+  if (demo !== null) return formError(demo);
   const parsed = parseForm(createWorkspaceSchema(), formData, CREATE_WORKSPACE_FIELDS);
   if (!parsed.ok) return parsed.state;
   const { name, currency } = parsed.data;
@@ -399,6 +404,8 @@ export async function deleteWorkspace(
   const caller = await callerMembership(formData);
   if (caller === null) return formError(STALE_PAGE);
   if (caller.role !== "OWNER") return formError("Only an owner can delete this workspace.");
+  const demo = await demoRefusal(caller.userId);
+  if (demo !== null) return formError(demo);
 
   const { confirmName } = readForm(formData, ["confirmName"]);
   const deleted = await prisma.$transaction(async (tx) => {

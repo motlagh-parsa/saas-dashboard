@@ -34,6 +34,12 @@ const envSchema = z.object({
     z.string().min(1).optional(),
   ),
 
+  // "true" makes the demo PUBLIC: a "Try the demo" button on the landing and
+  // sign-in pages signs anyone in as the demo account, no password, and the
+  // daily job rebuilds the demo every night (lib/demo.ts). Needs DEMO_PASSWORD
+  // set too (the demo account must exist).
+  DEMO_PUBLIC: z.enum(["true", "false"]).default("false"),
+
   // Shared secret for the daily snapshot job (GET /api/cron/snapshots), sent as
   // `Authorization: Bearer <CRON_SECRET>` — the header Vercel Cron sends when
   // this variable is set on the project. Optional: without it the app runs and
@@ -126,6 +132,9 @@ export const isMailEnabled: boolean = mailDriver !== "none";
 export function appUrl(): string {
   return (env.NEXTAUTH_URL ?? "http://localhost:3000").replace(/\/+$/, "");
 }
+
+/** A public demo: one-click sign-in as the demo account, rebuilt nightly. */
+export const isPublicDemo: boolean = env.DEMO_PUBLIC === "true" && env.DEMO_PASSWORD !== undefined;
 
 /** GitHub OAuth is only wired up when both credentials are present. */
 export const isGithubEnabled: boolean = Boolean(

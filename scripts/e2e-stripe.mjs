@@ -13,10 +13,11 @@
 //   3. Sync now; the daily job also syncs connected workspaces.
 //   4. A member is refused the page.
 //   5. Disconnect: the key is gone, the synced data stays.
-// Runs in a fresh workspace it creates for the demo user, and deletes it.
+// Runs in a fresh workspace it creates, owned by a fresh account (the demo
+// account is refused Stripe on purpose — lib/demo.ts), and deletes both.
 import { createHmac } from "node:crypto";
 
-import { APP, connectDb, createChecks, launchBrowser, mintSession, money, signInDemo, sleep } from "./e2e-lib.mjs";
+import { APP, connectDb, createChecks, launchBrowser, mintSession, money, sleep } from "./e2e-lib.mjs";
 import { FAKE_KEY, FAKE_KEY_NO_INVOICES } from "./fake-stripe.mjs";
 
 const FAKE = process.env.STRIPE_API_BASE ?? "http://127.0.0.1:12111";
@@ -26,7 +27,7 @@ const browser = await launchBrowser({ port: 9339 });
 const { evaluate, waitFor, load, click, setSession, whenInteractive } = browser;
 
 const stamp = Date.now().toString(36);
-const demo = await one(`SELECT id FROM "User" WHERE email = $1`, [process.env.DEMO_EMAIL]);
+const ownerEmail = `e2e-stripe-owner-${stamp}@example.test`;
 const bob = await one(`SELECT id FROM "User" WHERE email = 'bob@acme-demo.dev'`);
 const orgId = `e2estripe${stamp}`.padEnd(25, "0"); // cuid-shaped: actions check id format
 
@@ -56,9 +57,13 @@ try {
     `INSERT INTO "Organization" (id, name, slug, currency, "createdAt", "updatedAt") VALUES ($1, $2, $3, 'USD', now(), now())`,
     [orgId, `E2E Stripe ${stamp}`, `e2e-stripe-${stamp}`],
   );
-  await db.query(`INSERT INTO "Membership" ("userId", "organizationId", role, "createdAt") VALUES ($1, $2, 'OWNER', now())`, [demo.id, orgId]);
+  const owner = await one(
+    `INSERT INTO "User" (id, email, name, "createdAt", "updatedAt") VALUES ($1, $2, 'E2E Stripe Owner', now(), now()) RETURNING id, email, name`,
+    [`e2eowner${stamp}`.padEnd(25, "0"), ownerEmail],
+  );
+  await db.query(`INSERT INTO "Membership" ("userId", "organizationId", role, "createdAt") VALUES ($1, $2, 'OWNER', now())`, [owner.id, orgId]);
   await db.query(`INSERT INTO "Membership" ("userId", "organizationId", role, "createdAt") VALUES ($1, $2, 'MEMBER', now())`, [bob.id, orgId]);
-  const session = await signInDemo();
+  const session = await mintSession(owner);
   await setSession(session, orgId);
 
   // 1. Connect --------------------------------------------------------------------------------
@@ -144,6 +149,7 @@ try {
 } finally {
   try {
     await db.query(`DELETE FROM "Organization" WHERE id = $1`, [orgId]);
+    await db.query(`DELETE FROM "User" WHERE email = $1`, [ownerEmail]);
   } catch (cleanupError) {
     console.error("cleanup failed:", cleanupError);
   }

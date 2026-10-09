@@ -58,6 +58,7 @@ const workspace = await one(
 const bob = await one(`SELECT id FROM "User" WHERE email = 'bob@acme-demo.dev'`);
 const stamp = Date.now().toString(36);
 let personalId = null;
+let schedulerId = null;
 
 try {
   // 1. Public pages ----------------------------------------------------------------------------
@@ -120,6 +121,16 @@ try {
   check("4. restored: back in the feed", /invoices? need attention/i.test(await evaluate("document.querySelector('main').innerText")));
 
   // 5. Scheduled reports ------------------------------------------------------------------------------
+  // As a real owner: the demo account can't schedule emails (lib/demo.ts), and
+  // its address isn't an inbox.
+  const schedulerEmail = `e2e-scheduler-${stamp}@example.test`;
+  const scheduler = await one(
+    `INSERT INTO "User" (id, email, name, "createdAt", "updatedAt") VALUES ($1, $2, 'E2E Scheduler', now(), now()) RETURNING id, email, name`,
+    [`e2esched${stamp}`.padEnd(25, "0"), schedulerEmail],
+  );
+  schedulerId = scheduler.id;
+  await db.query(`INSERT INTO "Membership" ("userId", "organizationId", role, "createdAt") VALUES ($1, $2, 'ADMIN', now())`, [scheduler.id, workspace.id]);
+  await setSession(await mintSession(scheduler), workspace.id);
   await load("/dashboard/reports");
   await click("Schedule report", `window.__e2e.byText("header button", "Schedule report")`);
   await waitFor("dialog", `!!window.__e2e.dialog()?.querySelector('select[name="reportId"]')`);
@@ -128,7 +139,7 @@ try {
     window.__e2e.set(d.querySelector('select[name="reportId"]'), "revenue-bridge");
     window.__e2e.set(d.querySelector('select[name="frequency"]'), "WEEKLY");
     return true; })()`);
-  check("5. the dialog says where it goes", (await evaluate("window.__e2e.dialog().innerText")).includes(demo.email));
+  check("5. the dialog says where it goes", (await evaluate("window.__e2e.dialog().innerText")).includes(schedulerEmail));
   await click("Save schedule", `window.__e2e.dialog()?.querySelector('button[type="submit"]')`);
   await waitFor("dialog closed", `!window.__e2e.dialog()`, 30_000);
   await waitFor("listed", `window.__e2e.text('[data-testid="report-schedules"]')?.includes("Revenue Bridge")`);
@@ -137,7 +148,7 @@ try {
   const schedule = await one(
     `SELECT id, frequency, EXTRACT(ISODOW FROM "nextRunAt")::int AS weekday, to_char("nextRunAt", 'HH24:MI') AS time
      FROM "ReportSchedule" WHERE "userId" = $1 AND "organizationId" = $2 AND "reportId" = 'revenue-bridge'`,
-    [demo.id, workspace.id],
+    [scheduler.id, workspace.id],
   );
   check("5. saved as weekly, next run on a Monday at 00:00 UTC", schedule?.frequency === "WEEKLY" && schedule.weekday === 1 && schedule.time === "00:00", JSON.stringify(schedule));
 
@@ -146,7 +157,7 @@ try {
   const cron = await fetch(`${APP}/api/cron/snapshots`, { headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } });
   const summary = await cron.json();
   check("5. the daily job sends due reports", cron.status === 200 && summary.reports?.sent >= 1, JSON.stringify(summary.reports));
-  const mail = await waitForMail(demo.email, "Revenue Bridge", { after: before });
+  const mail = await waitForMail(schedulerEmail, "Revenue Bridge", { after: before });
   check("5. the email has the CSV attached", mail.attachments?.[0]?.filename?.startsWith("revenue-bridge-") === true, mail.subject);
 
   await load("/dashboard/reports");
@@ -160,6 +171,10 @@ try {
     if (personalId) await db.query(`DELETE FROM "Notification" WHERE id = $1`, [personalId]);
     await db.query(`DELETE FROM "NotificationPreference" WHERE "userId" = $1`, [demo.id]);
     await db.query(`DELETE FROM "ReportSchedule" WHERE "userId" = $1`, [demo.id]);
+    if (schedulerId) {
+      await db.query(`DELETE FROM "Notification" WHERE "userId" = $1`, [schedulerId]);
+      await db.query(`DELETE FROM "User" WHERE id = $1`, [schedulerId]);
+    }
     await db.query(`DELETE FROM "Notification" WHERE "organizationId" = $1 AND type = 'REPORT_READY' AND "userId" = $2`, [workspace.id, demo.id]);
   } catch (cleanupError) {
     console.error("cleanup failed:", cleanupError);

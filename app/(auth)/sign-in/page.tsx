@@ -5,7 +5,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CircleCheck } from "lucide-react";
 
-import { isGithubEnabled, isMailEnabled } from "@/lib/env";
+import { isGithubEnabled, isMailEnabled, isPublicDemo } from "@/lib/env";
+import { DemoButton } from "@/components/auth/demo-button";
 import { SignInForm } from "@/components/auth/sign-in-form";
 
 export const metadata: Metadata = {
@@ -81,6 +82,13 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
           initialError={error}
         />
       </div>
+
+      {isPublicDemo ? (
+        <div className="mt-6 flex flex-col gap-2 border-t border-border pt-6">
+          <p className="text-sm text-muted-foreground">Just looking? Explore a workspace full of sample data.</p>
+          <DemoButton className="h-11 w-full" />
+        </div>
+      ) : null}
 
       <p className="mt-6 text-sm text-muted-foreground">
         New here?{" "}

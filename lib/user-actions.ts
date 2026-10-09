@@ -52,6 +52,7 @@ import { buildCsv, csvFilename } from "@/lib/csv/write";
 import { formatPersonName } from "@/lib/format";
 import { issueInvite } from "@/lib/invite-token";
 import { prisma } from "@/lib/prisma";
+import { demoRefusal } from "@/lib/demo";
 import type {
   ExportUsersResult,
   ResendInviteState,
@@ -406,7 +407,7 @@ export async function createUser(
   });
   if (caller === null) return createFailure(STALE_PAGE);
   if (caller.role === "MEMBER") return createFailure("Only owners and admins can add users.");
-  const unverified = await unverifiedEmailRefusal(session.user.id);
+  const unverified = (await demoRefusal(session.user.id)) ?? (await unverifiedEmailRefusal(session.user.id));
   if (unverified !== null) return createFailure(unverified);
 
   const parsed = createUserSchema.safeParse({
@@ -543,7 +544,7 @@ export async function resendInvite(
 ): Promise<ResendInviteState> {
   const target = await readTarget(formData);
   if (target === null) return { ...failure(STALE_PAGE), token: null, emailedTo: null };
-  const unverified = await unverifiedEmailRefusal(target.callerId);
+  const unverified = (await demoRefusal(target.callerId)) ?? (await unverifiedEmailRefusal(target.callerId));
   if (unverified !== null) return { ...failure(unverified), token: null, emailedTo: null };
 
   let token: string | null = null;

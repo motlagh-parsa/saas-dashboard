@@ -17,6 +17,7 @@ import { sendPasswordChangedEmail } from "@/lib/account-email";
 import { requireSession } from "@/lib/auth";
 import { hashPassword, verifyPassword } from "@/lib/password";
 import { prisma } from "@/lib/prisma";
+import { demoRefusal } from "@/lib/demo";
 import {
   passwordSchema,
   profileFieldErrors,
@@ -35,6 +36,8 @@ export async function updateProfile(
   formData: FormData,
 ): Promise<ProfileFormState> {
   const session = await requireSession();
+  const demo = await demoRefusal(session.user.id);
+  if (demo !== null) return { status: "error", message: demo, fieldErrors: {} };
 
   const parsed = profileSchema.safeParse({ name: formData.get("name") });
   if (!parsed.success) {
