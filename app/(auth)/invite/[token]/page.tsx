@@ -10,7 +10,8 @@ import Link from "next/link";
 
 import { lookupInvite } from "@/lib/invite-token";
 import { formatPersonName } from "@/lib/format";
-import { AcceptInviteForm } from "@/components/auth/accept-invite-form";
+import { acceptInvite } from "@/app/(auth)/invite/[token]/actions";
+import { SetPasswordForm } from "@/components/auth/set-password-form";
 
 export const metadata: Metadata = {
   title: "Set your password",
@@ -89,7 +90,13 @@ export default async function InvitePage({ params }: InvitePageProps) {
       </div>
 
       <div className="mt-6">
-        <AcceptInviteForm token={token} email={user.email} />
+        <SetPasswordForm
+          action={acceptInvite}
+          token={token}
+          email={user.email}
+          submitLabel="Set password"
+          pendingLabel="Setting password…"
+        />
       </div>
 
       <p className="mt-6 text-sm text-muted-foreground">

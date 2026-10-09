@@ -16,15 +16,9 @@ Each step ships as its own pull request. A step is done when every item under
 | 3 | Onboarding, workspace creation and deletion, sample data in product, per-workspace daily cron |
 | 4 | CSV import (customers, plans, subscriptions with history, invoices), preview, idempotent re-import |
 | 5 | Public REST API v1 with API keys, rate limits, OpenAPI document and docs page |
+| 6 | Email: confirmation, password reset with session revocation, invite emails (Resend or a local mailbox) |
 
 ## Remaining
-
-### 6 — Email
-- A mailer with one interface and two drivers: Resend (HTTP API, `fetch`, no SDK) when `RESEND_API_KEY` is set, otherwise a development driver that logs each message and keeps it readable for tests.
-- Email verification after registration; unverified accounts see a banner and can resend.
-- Password reset: request by email, single-use hashed token, 1-hour expiry, no account enumeration.
-- Invites send an email with the link (the copyable link stays as a fallback).
-- **Done when:** every flow is covered by the verify script and an e2e script that reads the message from the development driver.
 
 ### 7 — Notifications and the last placeholder content
 - Notifications produced by real events: MRR milestones, churn of a customer above a threshold, failed/uncollectible invoices, import and sync results, weekly summary.
@@ -49,3 +43,7 @@ Each step ships as its own pull request. A step is done when every item under
 ### 10 — Deploy
 - Vercel project, hosted Postgres, environment variables, cron, domain.
 - **Done when:** the public URL serves the demo and a new user can sign up end to end.
+
+## Known issues
+
+- **Settings → currency:** in roughly one save in six the "Amounts are now in …" confirmation does not appear, although the change is saved (the field shows the new value after a reload). Seen in a production build under e2e load; cause not yet isolated.

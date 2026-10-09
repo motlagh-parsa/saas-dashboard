@@ -1,17 +1,18 @@
 "use client";
 
-// Client leaf of the invite page — same structure and styling as RegisterForm.
+// "Choose a new password" — the form behind an invite link and a password-reset
+// link. Same structure and styling as RegisterForm. The two pages differ only in
+// the Server Action and the button copy, so both pass those in.
 //
 // Validation happens twice with one schema (lib/invite-schema.ts): here, on
-// submit, so a mismatch is caught without a round trip; and again in
-// `acceptInvite`, which is the check that counts. Fields are CONTROLLED because
-// React resets uncontrolled inputs after every form action.
+// submit, so a mismatch is caught without a round trip; and again in the
+// action, which is the check that counts. Fields are CONTROLLED because React
+// resets uncontrolled inputs after every form action.
 //
-// Success never renders here: `acceptInvite` redirects to /sign-in?invited=1.
+// Success never renders here: both actions redirect to /sign-in.
 import * as React from "react";
 import { TriangleAlert } from "lucide-react";
 
-import { acceptInvite } from "@/app/(auth)/invite/[token]/actions";
 import {
   ACCEPT_INVITE_FIELDS,
   INITIAL_ACCEPT_INVITE_STATE,
@@ -19,6 +20,7 @@ import {
   acceptInviteSchema,
   type AcceptInviteField,
   type AcceptInviteFieldErrors,
+  type AcceptInviteState,
 } from "@/lib/invite-schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,17 +35,18 @@ const FIELDS: readonly { readonly field: AcceptInviteField; readonly label: stri
   { field: "confirmPassword", label: "Confirm password" },
 ];
 
-interface AcceptInviteFormProps {
+interface SetPasswordFormProps {
+  /** Receives the token and both password fields; redirects on success. */
+  action: (previous: AcceptInviteState, formData: FormData) => Promise<AcceptInviteState>;
   token: string;
   /** Offered to password managers as the username, so the new password is saved against it. */
   email: string;
+  submitLabel: string;
+  pendingLabel: string;
 }
 
-export function AcceptInviteForm({ token, email }: AcceptInviteFormProps) {
-  const [state, formAction, pending] = React.useActionState(
-    acceptInvite,
-    INITIAL_ACCEPT_INVITE_STATE,
-  );
+export function SetPasswordForm({ action, token, email, submitLabel, pendingLabel }: SetPasswordFormProps) {
+  const [state, formAction, pending] = React.useActionState(action, INITIAL_ACCEPT_INVITE_STATE);
   const [values, setValues] = React.useState<AcceptInviteValues>(EMPTY_VALUES);
   const [clientErrors, setClientErrors] = React.useState<AcceptInviteFieldErrors>({});
 
@@ -135,7 +138,7 @@ export function AcceptInviteForm({ token, email }: AcceptInviteFormProps) {
           disabled={pending}
           className="mt-1 h-11 w-full bg-brand text-brand-foreground hover:bg-brand/90"
         >
-          {pending ? "Setting password…" : "Set password"}
+          {pending ? pendingLabel : submitLabel}
         </Button>
       </form>
     </div>

@@ -16,6 +16,7 @@ import {
   createApiKeySchema,
   type CreateApiKeyState,
 } from "@/lib/api-key-form";
+import { unverifiedEmailRefusal } from "@/lib/account-email";
 import { writeAudit } from "@/lib/audit-writer";
 import { requireSession } from "@/lib/auth";
 import { ID_PATTERN, fieldErrorsOf, readForm, type BillingFormState } from "@/lib/billing-form";
@@ -49,6 +50,8 @@ function createFailure(message: string | null, fieldErrors: Record<string, strin
 export async function createApiKey(_previous: CreateApiKeyState, formData: FormData): Promise<CreateApiKeyState> {
   const caller = await keyManager(formData);
   if (!caller.ok) return createFailure(caller.message);
+  const unverified = await unverifiedEmailRefusal(caller.userId);
+  if (unverified !== null) return createFailure(unverified);
   const parsed = createApiKeySchema.safeParse(readForm(formData, CREATE_API_KEY_FIELDS));
   if (!parsed.success) return createFailure(null, fieldErrorsOf(parsed.error));
   const { name, scope, expiry } = parsed.data;
