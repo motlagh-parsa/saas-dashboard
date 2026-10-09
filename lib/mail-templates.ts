@@ -144,3 +144,45 @@ export function inviteTemplate(input: {
     }),
   };
 }
+
+/** Any in-app notification that is also emailed (lib/notification-writer.ts). */
+export function notificationTemplate(input: {
+  workspaceName: string;
+  title: string;
+  body: string;
+  url: string;
+  manageUrl: string;
+}): Template {
+  return {
+    subject: `${input.title} · ${input.workspaceName}`,
+    ...layout({
+      heading: input.title,
+      paragraphs: [input.body, `Workspace: ${input.workspaceName}`],
+      action: { label: "Open in Meridian", url: input.url },
+      footnote: `Choose which notifications reach your inbox in your profile settings: ${input.manageUrl}`,
+    }),
+  };
+}
+
+/** A scheduled report, with its CSV attached (lib/report-schedules.ts). */
+export function scheduledReportTemplate(input: {
+  name: string | null;
+  workspaceName: string;
+  reportName: string;
+  frequencyWord: string;
+  url: string;
+  manageUrl: string;
+}): Template {
+  return {
+    subject: `${input.reportName} — ${input.workspaceName}`,
+    ...layout({
+      heading: input.reportName,
+      paragraphs: [
+        greeting(input.name),
+        `Your ${input.frequencyWord} ${input.reportName} report for ${input.workspaceName} is attached as a CSV file.`,
+      ],
+      action: { label: "Open Reports", url: input.url },
+      footnote: `You scheduled this report yourself. Stop or change it on the Reports page: ${input.manageUrl}`,
+    }),
+  };
+}

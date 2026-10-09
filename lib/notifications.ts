@@ -35,8 +35,11 @@
 //     being marked read. Checking ownership and then updating by id alone would
 //     be the same bug with extra steps.
 //   - `userId = NULL` is an ORG-WIDE notification; a set `userId` is personal to
-//     that member. Both are part of the org feed, which is why the reads filter on
-//     the organization only.
+//     that member and visible to them ONLY — every read and write here filters on
+//     "org-wide, or mine" (`visibleTo`), so nobody sees another member's report
+//     or import results.
+//   - Types the member turned off in the app (their notification preferences)
+//     are left out of their feed and their count.
 //   - `archivedAt` set means filed away. Archived rows are out of the default
 //     feed, the unread feed, and the unread count — they appear only when asked
 //     for with `archivedOnly`. Archiving never touches `readAt`.
@@ -49,6 +52,7 @@ import type { Notification, Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth";
+import { mutedInAppTypes } from "@/lib/notification-preferences";
 
 // NOTE: the row and enum types are NOT re-exported from here, deliberately.
 //
@@ -101,6 +105,16 @@ async function assertMembership(orgId: string): Promise<string> {
   return userId;
 }
 
+/** What one member may see of a workspace's feed: org-wide rows and their own. */
+async function visibleTo(orgId: string, userId: string): Promise<Prisma.NotificationWhereInput> {
+  const muted = await mutedInAppTypes(userId);
+  return {
+    organizationId: orgId,
+    OR: [{ userId: null }, { userId }],
+    ...(muted.length > 0 ? { type: { notIn: muted } } : {}),
+  };
+}
+
 /** Clamps an untrusted page size into range; `undefined` means unbounded. */
 function resolveLimit(limit: number | undefined): number | undefined {
   if (limit === undefined) return undefined;
@@ -120,10 +134,10 @@ export async function getNotifications(
   orgId: string,
   options?: GetNotificationsOptions,
 ): Promise<Notification[]> {
-  await assertMembership(orgId);
+  const userId = await assertMembership(orgId);
 
   const where: Prisma.NotificationWhereInput = {
-    organizationId: orgId,
+    ...(await visibleTo(orgId, userId)),
     archivedAt: options?.archivedOnly === true ? { not: null } : null,
     ...(options?.unreadOnly === true ? { readAt: null } : {}),
   };
@@ -144,10 +158,10 @@ export async function getNotifications(
  * opens onto no longer shows.
  */
 export async function getUnreadCount(orgId: string): Promise<number> {
-  await assertMembership(orgId);
+  const userId = await assertMembership(orgId);
 
   return prisma.notification.count({
-    where: { organizationId: orgId, readAt: null, archivedAt: null },
+    where: { ...(await visibleTo(orgId, userId)), readAt: null, archivedAt: null },
   });
 }
 
@@ -163,10 +177,10 @@ export async function markAsRead(
   notificationId: string,
   orgId: string,
 ): Promise<number> {
-  await assertMembership(orgId);
+  const userId = await assertMembership(orgId);
 
   const result = await prisma.notification.updateMany({
-    where: { id: notificationId, organizationId: orgId, readAt: null },
+    where: { id: notificationId, organizationId: orgId, OR: [{ userId: null }, { userId }], readAt: null },
     data: { readAt: new Date() },
   });
 
@@ -187,10 +201,10 @@ export async function markAsRead(
  * this" survives a second click.
  */
 export async function markAllAsRead(orgId: string): Promise<number> {
-  await assertMembership(orgId);
+  const userId = await assertMembership(orgId);
 
   const result = await prisma.notification.updateMany({
-    where: { organizationId: orgId, readAt: null },
+    where: { ...(await visibleTo(orgId, userId)), readAt: null },
     data: { readAt: new Date() },
   });
 
@@ -211,10 +225,10 @@ export async function archiveNotification(
   notificationId: string,
   orgId: string,
 ): Promise<number> {
-  await assertMembership(orgId);
+  const userId = await assertMembership(orgId);
 
   const result = await prisma.notification.updateMany({
-    where: { id: notificationId, organizationId: orgId, archivedAt: null },
+    where: { id: notificationId, organizationId: orgId, OR: [{ userId: null }, { userId }], archivedAt: null },
     data: { archivedAt: new Date() },
   });
 
@@ -232,10 +246,10 @@ export async function archiveNotification(
  * Returns the number archived.
  */
 export async function archiveAllRead(orgId: string): Promise<number> {
-  await assertMembership(orgId);
+  const userId = await assertMembership(orgId);
 
   const result = await prisma.notification.updateMany({
-    where: { organizationId: orgId, readAt: { not: null }, archivedAt: null },
+    where: { ...(await visibleTo(orgId, userId)), readAt: { not: null }, archivedAt: null },
     data: { archivedAt: new Date() },
   });
 

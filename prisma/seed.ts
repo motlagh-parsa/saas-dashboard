@@ -18,6 +18,7 @@
 import type { Role } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
+import { evaluateAlerts } from "@/lib/alerts";
 import { generateSampleData, removeSampleData } from "@/lib/sample-data";
 
 if (process.env.NODE_ENV === "production") {
@@ -124,6 +125,10 @@ async function main(): Promise<void> {
         `${written.snapshots} snapshots` +
         (removed.subscriptions > 0 ? ` (replaced ${removed.subscriptions} sample subscriptions)` : ""),
     );
+    // Real alerts on the sample data, so the feed has something true in it. In
+    // the app only: alerts about sample data are never emailed (lib/alerts.ts).
+    const alerts = await evaluateAlerts(workspace.id);
+    console.log(`    alerts: ${alerts.raised.join(", ") || "none"}`);
   }
   console.log(`  demo user     : ${DEMO_EMAIL} (owner of both), ${TEAMMATES.length} teammates in ${northwind.name}`);
 }

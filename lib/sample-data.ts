@@ -529,6 +529,12 @@ export async function removeSampleData(organizationId: string): Promise<RemovedS
         where: { organizationId, source: "SAMPLE", subscriptions: { none: {} } },
       });
       const snapshots = await tx.metricSnapshot.deleteMany({ where: { organizationId } });
+      // Alerts raised about the sample data (lib/alerts.ts) go with it, and so do
+      // their marks, so the remaining real data is judged afresh.
+      await tx.notification.deleteMany({
+        where: { organizationId, type: { in: ["CHURN_ALERT", "REVENUE_DIP", "INVOICE_OVERDUE", "MRR_MILESTONE"] } },
+      });
+      await tx.alertMark.deleteMany({ where: { organizationId } });
 
       return {
         invoices: invoices.count,

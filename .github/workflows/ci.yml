@@ -90,6 +90,7 @@ jobs:
           npm run e2e:import
           npm run e2e:api
           npm run e2e:email
+          npm run e2e:notifications
 
       - name: Server log
         if: failure()

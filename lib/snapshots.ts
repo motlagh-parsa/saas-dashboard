@@ -28,6 +28,7 @@ import "server-only";
 // row stale after a change that takes effect today.
 import type { Prisma } from "@prisma/client";
 
+import { evaluateAlerts } from "@/lib/alerts";
 import { prisma } from "@/lib/prisma";
 import {
   DAY_MS,
@@ -228,4 +229,6 @@ export async function scheduleRecompute(organizationId: string, fromDate: Date):
   } finally {
     running.delete(organizationId);
   }
+  // With the numbers current, see whether anything is worth telling the team.
+  await evaluateAlerts(organizationId);
 }

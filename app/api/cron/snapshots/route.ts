@@ -19,6 +19,10 @@
 //      snapshot — or its earliest subscription start, if it has none — through
 //      TODAY, with lib/snapshots.ts, the function every billing write also uses.
 //      A missed run is filled on the next one instead of leaving a hole.
+//   3. Raises any alerts the new numbers call for (lib/alerts.ts), and on
+//      Mondays posts the weekly summary.
+// Then, once for everyone, it emails the report schedules that are due
+// (lib/report-schedules.ts).
 // A failure in one workspace is logged and skipped; the others still run. The
 // response is a JSON summary.
 import "server-only";
@@ -26,7 +30,9 @@ import "server-only";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
+import { evaluateAlerts, sendWeeklySummary } from "@/lib/alerts";
 import { env } from "@/lib/env";
+import { runDueSchedules, type ScheduleRunResult } from "@/lib/report-schedules";
 import { prisma } from "@/lib/prisma";
 import { DAY_MS, utcDayStart } from "@/lib/snapshot-formula";
 import { recomputeSnapshots, settleEndedSegments } from "@/lib/snapshots";
@@ -54,6 +60,9 @@ interface SnapshotJobResult {
   readonly statusesFixed: number;
   /** The last day written — today, UTC. */
   readonly through: string;
+  /** Notifications raised by alerts and weekly summaries. */
+  readonly alerts: number;
+  readonly reports: ScheduleRunResult;
   readonly failures: readonly CronFailure[];
 }
 
@@ -94,7 +103,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   let processed = 0;
   let rowsWritten = 0;
   let statusesFixed = 0;
+  let alerts = 0;
   const failures: CronFailure[] = [];
+  const isMonday = now.getUTCDay() === 1;
 
   for (const workspace of workspaces) {
     try {
@@ -116,6 +127,9 @@ export async function GET(request: Request): Promise<NextResponse> {
       const result = await recomputeSnapshots(workspace.id, from, { through: today });
       rowsWritten += result.days;
       processed += 1;
+
+      alerts += (await evaluateAlerts(workspace.id, now)).raised.length;
+      if (isMonday && (await sendWeeklySummary(workspace.id, now))) alerts += 1;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[cron:snapshots] workspace failed", { organizationId: workspace.id, error });
@@ -123,12 +137,16 @@ export async function GET(request: Request): Promise<NextResponse> {
     }
   }
 
+  const reports = await runDueSchedules(now);
+
   const result: SnapshotJobResult = {
     workspaces: workspaces.length,
     processed,
     rowsWritten,
     statusesFixed,
     through: isoDay(today),
+    alerts,
+    reports,
     failures,
   };
   return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
