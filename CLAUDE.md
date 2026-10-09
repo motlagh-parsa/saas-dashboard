@@ -1,7 +1,7 @@
 # SaaS Metrics Dashboard
 
 ## Stack
-- Next.js 15 App Router, TypeScript
+- Next.js 16 App Router, TypeScript
 - Tailwind + shadcn/ui (Base UI, Nova preset)
 - Prisma + PostgreSQL
 - NextAuth
@@ -19,4 +19,4 @@ No `src/` directory. Paths are `app/`, `components/`, `lib/` at the repo root.
 - Prisma client singleton lives at `lib/prisma.ts`
 
 ## Reference
-Read `PRD.md` before implementing any feature.mkdir .claude\agents
+Read `PRD.md` before implementing any feature, and `docs/ROADMAP.md` for what is done and what is next.
