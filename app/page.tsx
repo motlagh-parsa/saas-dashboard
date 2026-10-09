@@ -9,6 +9,8 @@ import Link from "next/link";
 import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth";
+import { isPublicDemo } from "@/lib/env";
+import { DemoButton } from "@/components/auth/demo-button";
 import { Button } from "@/components/ui/button";
 import { BrandMark } from "@/components/dashboard/brand-mark";
 import { MrrBridge } from "@/components/marketing/mrr-bridge";
@@ -94,7 +96,8 @@ export default async function Home() {
             <Button asChild className="h-11 bg-brand px-5 text-brand-foreground hover:bg-brand/90">
               <Link href={signedIn ? "/dashboard" : "/register"}>{signedIn ? "Open dashboard" : "Create a workspace"}</Link>
             </Button>
-            <Button asChild variant="outline" className="h-11 px-5">
+            {isPublicDemo && !signedIn ? <DemoButton className="h-11 px-5" /> : null}
+            <Button asChild variant={isPublicDemo && !signedIn ? "ghost" : "outline"} className="h-11 px-5">
               <Link href="/docs/api">Read the API docs</Link>
             </Button>
           </div>

@@ -10,6 +10,9 @@ export default defineConfig({
     seed: "ts-node -r ./scripts/ts-runtime.cjs prisma/seed.ts",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    // Migrations need a direct connection on hosts whose pooler can't run them
+    // (Neon, Supabase): set DIRECT_DATABASE_URL there. The app itself always
+    // uses DATABASE_URL (lib/prisma.ts), which should be the pooled one.
+    url: process.env["DIRECT_DATABASE_URL"] || process.env["DATABASE_URL"],
   },
 });

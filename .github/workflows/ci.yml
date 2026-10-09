@@ -95,6 +95,7 @@ jobs:
           npm run e2e:email
           npm run e2e:notifications
           npm run e2e:stripe
+          npm run e2e:production
 
       - name: Server log
         if: failure()

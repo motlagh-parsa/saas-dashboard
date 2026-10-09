@@ -20,6 +20,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { isDemoAddress } from "@/lib/demo-identity";
 import { env, mailDriver } from "@/lib/env";
 
 export interface MailAttachment {
@@ -98,6 +99,8 @@ async function sendLocally(message: MailMessage): Promise<boolean> {
 
 /** Sends one message. Returns whether it was handed off; never throws. */
 export async function sendMail(message: MailMessage): Promise<boolean> {
+  // The demo cast's addresses are not real inboxes (lib/demo-identity.ts).
+  if (isDemoAddress(message.to)) return false;
   switch (mailDriver) {
     case "resend":
       return sendWithResend(message, env.RESEND_API_KEY as string);

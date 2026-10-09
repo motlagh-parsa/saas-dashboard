@@ -17,7 +17,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import { z } from "zod";
 
 import { prisma } from "@/lib/prisma";
-import { env, isGithubEnabled } from "@/lib/env";
+import { env, isGithubEnabled, isPublicDemo } from "@/lib/env";
 import { verifyPassword } from "@/lib/password";
 import { survivesRevocation } from "@/lib/session-revocation";
 
@@ -103,6 +103,27 @@ providers.push(
     },
   }),
 );
+
+// The public demo's one-click sign-in: no credentials at all, so it exists only
+// when the deployment says the demo is public (lib/env.ts → isPublicDemo). The
+// demo account itself is fenced in by lib/demo.ts.
+if (isPublicDemo) {
+  providers.push(
+    CredentialsProvider({
+      id: "demo",
+      name: "Demo",
+      credentials: {},
+      async authorize() {
+        const demo = await prisma.user.findUnique({
+          where: { email: env.DEMO_EMAIL },
+          select: { id: true, name: true, email: true, image: true, suspendedAt: true },
+        });
+        if (demo === null || demo.suspendedAt !== null) return null;
+        return { id: demo.id, name: demo.name, email: demo.email, image: demo.image };
+      },
+    }),
+  );
+}
 
 export const authOptions: NextAuthOptions = {
   // Cast bridges the @auth/core adapter type to next-auth v4's Adapter type;

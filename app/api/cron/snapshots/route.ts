@@ -31,7 +31,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { evaluateAlerts, sendWeeklySummary } from "@/lib/alerts";
-import { env } from "@/lib/env";
+import { resetDemo } from "@/lib/demo";
+import { env, isPublicDemo } from "@/lib/env";
 import { runDueSchedules, type ScheduleRunResult } from "@/lib/report-schedules";
 import { runStripeSync } from "@/lib/stripe/sync";
 import { prisma } from "@/lib/prisma";
@@ -64,6 +65,8 @@ interface SnapshotJobResult {
   /** Notifications raised by alerts and weekly summaries. */
   readonly alerts: number;
   readonly reports: ScheduleRunResult;
+  /** Whether the public demo was rebuilt. */
+  readonly demoReset: boolean;
   /** Stripe connections synced, and how many of those failed. */
   readonly stripe: { readonly synced: number; readonly failed: number };
   readonly failures: readonly CronFailure[];
@@ -94,6 +97,18 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   const now = new Date();
   const today = utcDayStart(now);
+
+  // A public demo starts every day as it was built — first, so the rest of the
+  // job (snapshots, alerts) runs on the fresh data.
+  let demoReset = false;
+  if (isPublicDemo) {
+    try {
+      await resetDemo();
+      demoReset = true;
+    } catch (error: unknown) {
+      console.error("[cron] demo reset failed", { error });
+    }
+  }
 
   // Only workspaces that have something to measure. Each one's latest snapshot
   // and earliest subscription decide where its catch-up starts.
@@ -159,6 +174,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     through: isoDay(today),
     alerts,
     reports,
+    demoReset,
     stripe,
     failures,
   };

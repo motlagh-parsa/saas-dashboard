@@ -6,6 +6,13 @@ import "server-only";
 // custom `output`, so it resolves from the "@prisma/client" package specifier
 // (which re-exports node_modules/.prisma/client). Import the client from here
 // everywhere so the app and the seed agree on the same specifier and instance.
+//
+// Connections. On serverless (Vercel) every warm instance holds its own pool,
+// so the pool is kept SMALL — DATABASE_POOL_MAX, default 5 — and DATABASE_URL
+// should point at a pooler (Neon's "-pooler" host, Supabase's port 6543,
+// Prisma Postgres) rather than straight at Postgres. The pool and client are
+// cached on globalThis in every environment: in development that survives hot
+// reloads; on a warm serverless instance it means one pool per instance.
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
@@ -15,13 +22,20 @@ const globalForPrisma = globalThis as unknown as {
   pool?: Pool;
 };
 
-// Reuse the pool/client across HMR reloads in dev to avoid exhausting connections.
-const pool = globalForPrisma.pool ?? new Pool({ connectionString: process.env.DATABASE_URL });
+const poolMax = Number(process.env.DATABASE_POOL_MAX ?? (process.env.NODE_ENV === "production" ? 5 : 10));
+
+const pool =
+  globalForPrisma.pool ??
+  new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: Number.isFinite(poolMax) && poolMax > 0 ? poolMax : 5,
+    // Give idle connections back quickly: a serverless instance may sit frozen.
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 10_000,
+  });
 const adapter = new PrismaPg(pool);
 
 export const prisma: PrismaClient = globalForPrisma.prisma ?? new PrismaClient({ adapter });
 
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma;
-  globalForPrisma.pool = pool;
-}
+globalForPrisma.prisma = prisma;
+globalForPrisma.pool = pool;

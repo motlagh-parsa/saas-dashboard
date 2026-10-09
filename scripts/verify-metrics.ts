@@ -38,6 +38,7 @@ import { verifyBillingLifecycle } from "./verify-billing-ops";
 import { verifyEmail } from "./verify-email";
 import { verifyNotifications } from "./verify-notifications";
 import { verifyStripe } from "./verify-stripe";
+import { verifyDemo } from "./verify-demo";
 import { verifyImports } from "./verify-import";
 import {
   getChurnRateTrend,
@@ -362,6 +363,7 @@ async function main(): Promise<void> {
     created.push(...(await verifyEmail(check, stamp)));
     created.push(...(await verifyNotifications(check, stamp)));
     created.push(...(await verifyStripe(check, stamp)));
+    created.push(...(await verifyDemo(check, stamp)));
   } finally {
     // By id only: the workspaces this run created, and their cascade.
     if (created.length > 0) {

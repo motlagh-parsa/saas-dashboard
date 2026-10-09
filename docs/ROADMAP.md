@@ -19,18 +19,12 @@ Each step ships as its own pull request. A step is done when every item under
 | 6 | Email: confirmation, password reset with session revocation, invite emails (Resend or a local mailbox) |
 | 7 | Alerts (churn, revenue dips, overdue invoices, MRR milestones), weekly summary, notification preferences, scheduled report emails, landing page, no placeholder content |
 | 8 | Stripe sync: restricted read-only key (encrypted at rest), full and nightly sync through the API's own rules, signed webhooks for live updates |
+| 9 | Production readiness: migrations in the Vercel build, pooled connections, CSP and security headers, structured error logs, web vitals, health check, 404 and global error pages, a fenced and nightly-rebuilt public demo, README, deploy guide |
 
 ## Remaining
 
-### 9 — Production readiness
-- Build runs `prisma generate` and `prisma migrate deploy`; pooled connection string for serverless.
-- Security headers and CSP; error tracking hook; web-vitals reporting.
-- Public demo: read-only demo workspace, reset nightly.
-- README and a case-study page: what it does, architecture, decisions, screenshots.
-- **Done when:** a production build passes every check and the README lets a stranger run it locally in minutes.
-
 ### 10 — Deploy
-- Vercel project, hosted Postgres, environment variables, cron, domain.
+- Vercel project, hosted Postgres, environment variables, cron, domain — step by step in [DEPLOY.md](DEPLOY.md).
 - **Done when:** the public URL serves the demo and a new user can sign up end to end.
 
 ## Known issues

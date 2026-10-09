@@ -16,6 +16,7 @@ import { Prisma } from "@prisma/client";
 import { writeAudit } from "@/lib/audit-writer";
 import { requireSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { demoRefusal } from "@/lib/demo";
 import { seal } from "@/lib/secret-box";
 import { stripeClient, StripeError } from "@/lib/stripe/client";
 import { runStripeSync } from "@/lib/stripe/sync";
@@ -41,6 +42,9 @@ async function manager(formData: FormData): Promise<Manager> {
   });
   if (membership === null) return { ok: false, state: failure(STALE_PAGE) };
   if (membership.role === "MEMBER") return { ok: false, state: failure("Only owners and admins can manage integrations.") };
+  // A visitor's real Stripe data must never land in the shared demo.
+  const demo = await demoRefusal(session.user.id);
+  if (demo !== null) return { ok: false, state: failure(demo) };
   return { ok: true, userId: session.user.id, organizationId };
 }
 
