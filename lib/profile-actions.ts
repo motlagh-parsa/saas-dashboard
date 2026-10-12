@@ -11,10 +11,13 @@
 // there is nothing to forge — the one thing these actions can reach is the
 // caller themselves.
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 
+import { sendPasswordChangedEmail } from "@/lib/account-email";
 import { requireSession } from "@/lib/auth";
 import { hashPassword, verifyPassword } from "@/lib/password";
 import { prisma } from "@/lib/prisma";
+import { demoRefusal } from "@/lib/demo";
 import {
   passwordSchema,
   profileFieldErrors,
@@ -33,6 +36,8 @@ export async function updateProfile(
   formData: FormData,
 ): Promise<ProfileFormState> {
   const session = await requireSession();
+  const demo = await demoRefusal(session.user.id);
+  if (demo !== null) return { status: "error", message: demo, fieldErrors: {} };
 
   const parsed = profileSchema.safeParse({ name: formData.get("name") });
   if (!parsed.success) {
@@ -104,6 +109,15 @@ export async function updatePassword(
       fieldErrors: {},
     };
   }
+
+  // A heads-up to the inbox, with a reset link in case it wasn't them.
+  after(async () => {
+    const account = await prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { id: true, name: true, email: true },
+    });
+    if (account !== null) await sendPasswordChangedEmail(account);
+  });
 
   return { status: "success", message: "Password changed.", fieldErrors: {} };
 }

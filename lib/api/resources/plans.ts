@@ -102,7 +102,7 @@ export async function putPlan(ctx: ApiWriteContext, externalId: string, body: un
 
   const existing = await readPlan(ctx, externalId);
   if (existing === null) {
-    applied(ctx, await createPlanOp(organizationId, currency, input, { source: "API", externalId }), params);
+    applied(ctx, await createPlanOp(organizationId, currency, input, { source: ctx.source, externalId }), params);
   } else {
     let changed = false;
     if (existing.archivedAt !== null) {

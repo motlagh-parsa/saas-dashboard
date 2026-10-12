@@ -21,6 +21,7 @@ import { billingWriter } from "@/lib/billing-caller";
 import type { BillingFormState } from "@/lib/billing-form";
 import { prisma } from "@/lib/prisma";
 import { generateSampleData, removeSampleData as deleteSampleRows } from "@/lib/sample-data";
+import { evaluateAlerts } from "@/lib/alerts";
 import { recomputeSnapshots } from "@/lib/snapshots";
 import { countOwnBillingData } from "@/lib/workspace-status";
 
@@ -40,6 +41,8 @@ async function recomputeAll(organizationId: string): Promise<void> {
     select: { startedAt: true },
   });
   if (earliest !== null) await recomputeSnapshots(organizationId, earliest.startedAt);
+  // In-app only for sample data (lib/alerts.ts) — gives the feed something real.
+  await evaluateAlerts(organizationId);
 }
 
 export async function loadSampleData(

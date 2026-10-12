@@ -13,12 +13,16 @@ export interface UserActionState {
 
 export const IDLE_USER_ACTION: UserActionState = { status: "idle", message: null };
 
-/** `resendInvite`'s result: on success, the new raw invite token — shown once. */
+/**
+ * `resendInvite`'s result: on success, the new raw invite token — shown once —
+ * and the address the new invite email went to (null without email).
+ */
 export interface ResendInviteState extends UserActionState {
   readonly token: string | null;
+  readonly emailedTo: string | null;
 }
 
-export const IDLE_RESEND_INVITE: ResendInviteState = { ...IDLE_USER_ACTION, token: null };
+export const IDLE_RESEND_INVITE: ResendInviteState = { ...IDLE_USER_ACTION, token: null, emailedTo: null };
 
 /** `exportUsersCSV`'s result — the shared export shape (lib/csv.ts). */
 export type { CsvExportResult as ExportUsersResult } from "@/lib/csv/write";

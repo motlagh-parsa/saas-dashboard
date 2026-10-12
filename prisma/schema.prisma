@@ -32,6 +32,9 @@ model User {
   /// an admin adds the account; cleared when the invite is accepted.
   inviteToken     String?   @unique
   inviteExpiresAt DateTime?
+  /// Sessions issued before this instant are refused (lib/auth.ts). Set by a
+  /// password reset, so a reset also signs out every other device.
+  sessionsRevokedAt DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -45,6 +48,85 @@ model User {
   importRuns    ImportRun[]
   /// API keys this user created.
   apiKeys       ApiKey[]
+  /// Outstanding and used email verification / password reset tokens.
+  emailTokens   EmailToken[]
+  /// Overrides of the default notification channels (lib/notification-preferences.ts).
+  notificationPreferences NotificationPreference[]
+  /// Reports this user scheduled to be emailed to themselves.
+  reportSchedules ReportSchedule[]
+  /// Stripe connections this user set up.
+  stripeConnections StripeConnection[]
+}
+
+/// One user's choice for one notification type. Only overrides are stored; a
+/// missing row means the default for the user's role (lib/notification-preferences.ts).
+model NotificationPreference {
+  userId    String
+  type      NotificationType
+  inApp     Boolean
+  email     Boolean
+  updatedAt DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, type])
+}
+
+/// A report emailed on a schedule to the user who set it up (lib/report-schedules.ts).
+model ReportSchedule {
+  id             String          @id @default(cuid())
+  organizationId String
+  userId         String
+  reportId       String
+  frequency      ReportFrequency
+  /// The next time the daily job should send it. Advanced after each send.
+  nextRunAt      DateTime
+  lastSentAt     DateTime?
+  createdAt      DateTime        @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The daily job: "which schedules are due".
+  @@index([nextRunAt])
+  // The Reports page list, and the Organization cascade-delete FK.
+  @@index([organizationId, userId])
+  // The User cascade-delete FK.
+  @@index([userId])
+  // One schedule per report per person per workspace.
+  @@unique([organizationId, userId, reportId])
+}
+
+/// "This was already alerted" — the alert engine (lib/alerts.ts) records one
+/// mark per thing it has told the workspace about (a churned customer, an
+/// overdue invoice, a milestone), so each is said once.
+model AlertMark {
+  organizationId String
+  key            String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, key])
+}
+
+/// One-time tokens sent by email (lib/email-tokens.ts). Only the SHA-256 of the
+/// token is stored; the token itself exists only in the emailed link.
+model EmailToken {
+  id        String            @id @default(cuid())
+  userId    String
+  purpose   EmailTokenPurpose
+  /// SHA-256 hex of the token — never the token.
+  tokenHash String            @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime          @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Rate limiting ("how many sent in the last hour") and invalidating a user's
+  // other tokens of one purpose. Also covers the User cascade-delete FK.
+  @@index([userId, purpose, createdAt])
 }
 
 model Account {
@@ -113,6 +195,39 @@ model Organization {
   auditLogs     AuditLog[]
   importRuns    ImportRun[]
   apiKeys       ApiKey[]
+  reportSchedules ReportSchedule[]
+  alertMarks      AlertMark[]
+  stripeConnection StripeConnection?
+}
+
+/// A workspace's link to its Stripe account (lib/stripe/*). The restricted key
+/// and the webhook signing secret are stored encrypted (lib/secret-box.ts) —
+/// never in plain text, and never sent back to the browser.
+model StripeConnection {
+  id                     String    @id @default(cuid())
+  organizationId         String    @unique
+  /// AES-256-GCM ciphertext of the restricted API key.
+  encryptedKey           String
+  /// The key's last four characters, to recognise it in the UI.
+  keyHint                String
+  livemode               Boolean
+  /// AES-256-GCM ciphertext of the webhook signing secret (whsec_…), once set.
+  encryptedWebhookSecret String?
+  /// "idle" | "running" — a sync claims the connection by flipping this.
+  syncState              String    @default("idle")
+  syncStartedAt          DateTime?
+  lastSyncAt             DateTime?
+  /// Counts from the last run: created / updated / unchanged / skipped per kind.
+  lastSyncSummary        Json?
+  lastSyncError          String?
+  lastWebhookAt          DateTime?
+  createdById            String?
+  createdAt              DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([createdById])
 }
 
 model Membership {
@@ -369,6 +484,13 @@ enum NotificationType {
   REPORT_READY
   IMPORT_FINISHED
   SYSTEM
+  WEEKLY_SUMMARY
+}
+
+enum ReportFrequency {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +664,11 @@ model ApiRateLimit {
 }
 
 // ---------------------------------------------------------------------------
+
+enum EmailTokenPurpose {
+  VERIFY_EMAIL
+  RESET_PASSWORD
+}
 
 enum Role {
   OWNER

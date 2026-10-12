@@ -51,11 +51,23 @@ export const AUDIT_ACTION_LABELS = {
   "invoice.exported": "Exported invoices",
   "api_key.created": "Created API key",
   "api_key.revoked": "Revoked API key",
+  "stripe.connected": "Connected Stripe",
+  "stripe.disconnected": "Disconnected Stripe",
+  "stripe.synced": "Synced from Stripe",
 } as const;
 
 export type AuditAction = keyof typeof AUDIT_ACTION_LABELS;
 
-export type AuditTargetType = "user" | "workspace" | "subscription" | "customer" | "plan" | "invoice" | "import" | "api_key";
+export type AuditTargetType =
+  | "user"
+  | "workspace"
+  | "subscription"
+  | "customer"
+  | "plan"
+  | "invoice"
+  | "import"
+  | "api_key"
+  | "integration";
 
 /**
  * Who an entry says acted: the member, or "API · <key name>" for a change made

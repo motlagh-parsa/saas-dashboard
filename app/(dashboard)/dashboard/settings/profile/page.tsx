@@ -11,16 +11,20 @@ import type { Metadata } from "next";
 
 import { getActiveOrgId } from "@/lib/active-org";
 import { requireSession } from "@/lib/auth";
+import { isMailEnabled } from "@/lib/env";
+import { NOTIFICATION_KINDS } from "@/lib/notification-catalog";
+import { effectiveChannels } from "@/lib/notification-preferences";
 import { prisma } from "@/lib/prisma";
 import { formatInitials, formatPersonName } from "@/lib/format";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { NotificationPreferencesForm } from "@/components/dashboard/notification-preferences-form";
 import { PasswordForm } from "@/components/dashboard/password-form";
 import { ProfileDetailsForm } from "@/components/dashboard/profile-details-form";
 import { SettingsTabs } from "@/components/dashboard/settings-tabs";
 
 export const metadata: Metadata = {
   title: "Profile",
-  description: "Your name and password.",
+  description: "Your name, password and notifications.",
 };
 
 /** Eyebrow used on every panel — small mono caps, the label voice of the product. */
@@ -47,6 +51,13 @@ export default async function ProfilePage() {
           where: { userId_organizationId: { userId: session.user.id, organizationId } },
           select: { role: true },
         });
+  // Defaults follow the role in the active workspace (owners and admins get
+  // more by email); saved choices override them everywhere.
+  const channels = await effectiveChannels(
+    session.user.id,
+    membership?.role ?? "MEMBER",
+    NOTIFICATION_KINDS.map((kind) => kind.type),
+  );
   // Only whether a hash exists crosses into the render — never the hash itself.
   const hasPassword = user.passwordHash !== null;
   const displayName = formatPersonName(user.name, user.email);
@@ -64,7 +75,7 @@ export default async function ProfilePage() {
             your account, in every workspace
           </p>
         </div>
-        <SettingsTabs current="profile" showApiKeys={membership !== null && membership.role !== "MEMBER"} />
+        <SettingsTabs current="profile" showManagerTabs={membership !== null && membership.role !== "MEMBER"} />
       </header>
 
       <section className="rise mt-3 [animation-delay:60ms]">
@@ -112,6 +123,19 @@ export default async function ProfilePage() {
               </p>
             </CardContent>
           )}
+        </Card>
+      </section>
+
+      <section id="notifications" className="rise scroll-mt-20 [animation-delay:180ms]">
+        <Card className="gap-0 pb-0">
+          <CardHeader className="pb-3">
+            <h2 className={EYEBROW}>Notifications</h2>
+            <p className="text-[0.6875rem] text-muted-foreground">
+              What you hear about, in every workspace you belong to.
+              {isMailEnabled ? " Email goes to " + user.email + "." : ""}
+            </p>
+          </CardHeader>
+          <NotificationPreferencesForm initial={channels} emailEnabled={isMailEnabled} />
         </Card>
       </section>
     </main>

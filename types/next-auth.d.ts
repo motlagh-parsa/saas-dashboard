@@ -7,6 +7,8 @@ declare module "next-auth" {
     user: {
       id: string;
     } & DefaultSession["user"];
+    /** When this session signed in (ms since epoch) — see `authAt` on the JWT. */
+    authAt?: number;
   }
 
   interface User {
@@ -17,5 +19,11 @@ declare module "next-auth" {
 declare module "next-auth/jwt" {
   interface JWT {
     id?: string;
+    /**
+     * When the user signed in, ms since epoch. Stamped once and carried across
+     * every re-encode — unlike `iat`, which NextAuth refreshes — so lib/auth.ts
+     * can refuse sessions older than `User.sessionsRevokedAt`.
+     */
+    authAt?: number;
   }
 }

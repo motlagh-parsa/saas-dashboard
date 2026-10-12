@@ -34,6 +34,12 @@ const envSchema = z.object({
     z.string().min(1).optional(),
   ),
 
+  // "true" makes the demo PUBLIC: a "Try the demo" button on the landing and
+  // sign-in pages signs anyone in as the demo account, no password, and the
+  // daily job rebuilds the demo every night (lib/demo.ts). Needs DEMO_PASSWORD
+  // set too (the demo account must exist).
+  DEMO_PUBLIC: z.enum(["true", "false"]).default("false"),
+
   // Shared secret for the daily snapshot job (GET /api/cron/snapshots), sent as
   // `Authorization: Bearer <CRON_SECRET>` — the header Vercel Cron sends when
   // this variable is set on the project. Optional: without it the app runs and
@@ -42,6 +48,38 @@ const envSchema = z.object({
     (value) => (value === "" ? undefined : value),
     z.string().min(16, "CRON_SECRET must be at least 16 characters").optional(),
   ),
+
+  // Email (lib/mail.ts). With RESEND_API_KEY set, mail goes out through Resend's
+  // HTTP API. Without it, messages are written to a local mailbox directory
+  // instead (MAIL_DEV_DIR, or a temp folder in development) — that is how dev
+  // and the e2e tests read them. A production deployment with neither has no
+  // email at all, and the flows that need it step aside gracefully.
+  RESEND_API_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  // The From header. Resend only sends from a domain verified in its dashboard;
+  // its shared onboarding address only delivers to the account owner's inbox.
+  MAIL_FROM: z.string().min(3).default("Meridian <onboarding@resend.dev>"),
+  // Where the local mail driver writes messages (one JSON file each). Setting it
+  // turns that driver on even in a production build (CI's e2e run does this).
+  MAIL_DEV_DIR: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+
+  // Encrypts secrets stored in the database (Stripe keys — lib/secret-box.ts):
+  // 32 random bytes, base64. Optional: without it a key is derived from
+  // NEXTAUTH_SECRET, which then must never change once Stripe is connected.
+  ENCRYPTION_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .refine((value) => Buffer.from(value, "base64").length === 32, "ENCRYPTION_KEY must be 32 bytes, base64 (openssl rand -base64 32)")
+      .optional(),
+  ),
+  // Where Stripe's API is. Only ever changed to point tests at a local fake.
+  STRIPE_API_BASE: z.string().url().default("https://api.stripe.com"),
 
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -66,8 +104,37 @@ if (parsed.data.NODE_ENV === "production" && parsed.data.CRON_SECRET === EXAMPLE
   );
 }
 
+if (
+  parsed.data.NODE_ENV === "production" &&
+  parsed.data.RESEND_API_KEY !== undefined &&
+  parsed.data.NEXTAUTH_URL === undefined
+) {
+  throw new Error(
+    "Invalid environment variables:\n  - NEXTAUTH_URL: required in production when email is enabled — links in emails are built from it",
+  );
+}
+
 /** The single, typed, validated environment object for the whole app. */
 export const env = parsed.data;
+
+/** How this deployment sends email — see lib/mail.ts. */
+export const mailDriver: "resend" | "local" | "none" =
+  env.RESEND_API_KEY !== undefined
+    ? "resend"
+    : env.MAIL_DEV_DIR !== undefined || env.NODE_ENV !== "production"
+      ? "local"
+      : "none";
+
+/** Whether this deployment can send email at all. */
+export const isMailEnabled: boolean = mailDriver !== "none";
+
+/** Absolute base URL for links that leave the app (emails). No trailing slash. */
+export function appUrl(): string {
+  return (env.NEXTAUTH_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+}
+
+/** A public demo: one-click sign-in as the demo account, rebuilt nightly. */
+export const isPublicDemo: boolean = env.DEMO_PUBLIC === "true" && env.DEMO_PASSWORD !== undefined;
 
 /** GitHub OAuth is only wired up when both credentials are present. */
 export const isGithubEnabled: boolean = Boolean(

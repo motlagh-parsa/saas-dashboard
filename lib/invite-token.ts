@@ -86,7 +86,9 @@ export async function consumeInvite(
       inviteExpiresAt: { gt: now },
       passwordHash: null,
     },
-    data: { passwordHash, inviteToken: null, inviteExpiresAt: null },
+    // Opening the emailed (or hand-delivered) link is the proof of address an
+    // emailed verification link would give, so the address counts as confirmed.
+    data: { passwordHash, inviteToken: null, inviteExpiresAt: null, emailVerified: now },
   });
   return count === 1;
 }

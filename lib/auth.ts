@@ -17,8 +17,9 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import { z } from "zod";
 
 import { prisma } from "@/lib/prisma";
-import { env, isGithubEnabled } from "@/lib/env";
+import { env, isGithubEnabled, isPublicDemo } from "@/lib/env";
 import { verifyPassword } from "@/lib/password";
+import { survivesRevocation } from "@/lib/session-revocation";
 
 // Shape of the credentials form. Validated inside `authorize` so we never trust
 // the raw client payload.
@@ -103,6 +104,27 @@ providers.push(
   }),
 );
 
+// The public demo's one-click sign-in: no credentials at all, so it exists only
+// when the deployment says the demo is public (lib/env.ts → isPublicDemo). The
+// demo account itself is fenced in by lib/demo.ts.
+if (isPublicDemo) {
+  providers.push(
+    CredentialsProvider({
+      id: "demo",
+      name: "Demo",
+      credentials: {},
+      async authorize() {
+        const demo = await prisma.user.findUnique({
+          where: { email: env.DEMO_EMAIL },
+          select: { id: true, name: true, email: true, image: true, suspendedAt: true },
+        });
+        if (demo === null || demo.suspendedAt !== null) return null;
+        return { id: demo.id, name: demo.name, email: demo.email, image: demo.image };
+      },
+    }),
+  );
+}
+
 export const authOptions: NextAuthOptions = {
   // Cast bridges the @auth/core adapter type to next-auth v4's Adapter type;
   // the Prisma adapter is structurally compatible across the two.
@@ -113,41 +135,48 @@ export const authOptions: NextAuthOptions = {
   providers,
   callbacks: {
     async jwt({ token, user }) {
-      // On initial sign-in (`user` present) stamp the id onto the token; it then
-      // persists across subsequent requests.
-      if (user) token.id = user.id;
+      // On initial sign-in (`user` present) stamp the id and the sign-in time
+      // onto the token; both then persist across subsequent requests.
+      if (user) {
+        token.id = user.id;
+        token.authAt = Date.now();
+      }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.id ?? token.sub ?? "";
       }
+      session.authAt = token.authAt;
       return session;
     },
   },
 };
 
 /**
- * Whether the account behind a session may still use the app: it exists, and it
- * is not suspended.
+ * Whether a session may still use the app: the account exists, is not
+ * suspended, and the session signed in after the account's last session
+ * revocation (a password reset sets `sessionsRevokedAt`).
  *
  * Sessions are JWTs, so the token stays valid for its whole lifetime no matter
  * what happens to the account. `authorize` stops a suspended user signing in
  * again, but only this check cuts off a session that is ALREADY open. It also
  * catches a deleted account, whose leftover token would otherwise carry an id
- * that matches nothing.
+ * that matches nothing. A session from before `authAt` existed counts as
+ * signed in at 0, so a revocation cuts it off too.
  *
  * A primary-key lookup. Wrapped in React `cache()` so a page and the helpers it
  * calls during one render share a single read, the same way `getActiveOrgId`
  * does. Route handlers and Server Actions are not a React render, so there each
  * call simply runs.
  */
-const isAccountActive = cache(async (userId: string): Promise<boolean> => {
+const isSessionActive = cache(async (userId: string, authAt: number): Promise<boolean> => {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { suspendedAt: true },
+    select: { suspendedAt: true, sessionsRevokedAt: true },
   });
-  return user !== null && user.suspendedAt === null;
+  if (user === null || user.suspendedAt !== null) return false;
+  return survivesRevocation(authAt, user.sessionsRevokedAt);
 });
 
 /**
@@ -164,7 +193,7 @@ export async function requireSession(): Promise<Session> {
   if (!session?.user) {
     redirect("/sign-in");
   }
-  if (!(await isAccountActive(session.user.id))) {
+  if (!(await isSessionActive(session.user.id, session.authAt ?? 0))) {
     redirect("/sign-in");
   }
   return session;

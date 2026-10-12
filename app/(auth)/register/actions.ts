@@ -11,8 +11,13 @@
 // currency, at /onboarding. The form then signs them in with the same
 // credentials (NextAuth's client `signIn`) and continues there — no second
 // "please sign in" step.
+//
+// The confirmation email goes out after the response (`after()`), so a slow or
+// failing mail provider never delays or fails the sign-up itself.
+import { after } from "next/server";
 import { Prisma } from "@prisma/client";
 
+import { sendVerificationEmail } from "@/lib/account-email";
 import { hashPassword } from "@/lib/password";
 import { prisma } from "@/lib/prisma";
 import {
@@ -49,10 +54,11 @@ export async function registerUser(
 
   const passwordHash = await hashPassword(password);
 
+  let created: { id: string; name: string | null; email: string };
   try {
-    await prisma.user.create({
+    created = await prisma.user.create({
       data: { name, email, passwordHash },
-      select: { id: true },
+      select: { id: true, name: true, email: true },
     });
   } catch (error: unknown) {
     // The unique index is the real guard: two sign-ups racing with one email pass
@@ -63,6 +69,10 @@ export async function registerUser(
     }
     throw error;
   }
+
+  after(async () => {
+    await sendVerificationEmail(created);
+  });
 
   return { error: null, fieldErrors: {}, registered: true };
 }

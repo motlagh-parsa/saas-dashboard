@@ -16,36 +16,18 @@ Each step ships as its own pull request. A step is done when every item under
 | 3 | Onboarding, workspace creation and deletion, sample data in product, per-workspace daily cron |
 | 4 | CSV import (customers, plans, subscriptions with history, invoices), preview, idempotent re-import |
 | 5 | Public REST API v1 with API keys, rate limits, OpenAPI document and docs page |
+| 6 | Email: confirmation, password reset with session revocation, invite emails (Resend or a local mailbox) |
+| 7 | Alerts (churn, revenue dips, overdue invoices, MRR milestones), weekly summary, notification preferences, scheduled report emails, landing page, no placeholder content |
+| 8 | Stripe sync: restricted read-only key (encrypted at rest), full and nightly sync through the API's own rules, signed webhooks for live updates |
+| 9 | Production readiness: migrations in the Vercel build, pooled connections, CSP and security headers, structured error logs, web vitals, health check, 404 and global error pages, a fenced and nightly-rebuilt public demo, README, deploy guide |
 
 ## Remaining
 
-### 6 — Email
-- A mailer with one interface and two drivers: Resend (HTTP API, `fetch`, no SDK) when `RESEND_API_KEY` is set, otherwise a development driver that logs each message and keeps it readable for tests.
-- Email verification after registration; unverified accounts see a banner and can resend.
-- Password reset: request by email, single-use hashed token, 1-hour expiry, no account enumeration.
-- Invites send an email with the link (the copyable link stays as a fallback).
-- **Done when:** every flow is covered by the verify script and an e2e script that reads the message from the development driver.
-
-### 7 — Notifications and the last placeholder content
-- Notifications produced by real events: MRR milestones, churn of a customer above a threshold, failed/uncollectible invoices, import and sync results, weekly summary.
-- Per-user notification preferences (in-app, and email once step 6 exists).
-- Scheduled reports become real (emailed on schedule) or are removed — no "coming soon".
-- The sign-in panel's invented figures are replaced, and `/` becomes a real landing page.
-- **Done when:** nothing in the product shows placeholder or invented content, verified by an e2e pass over every page.
-
-### 8 — Stripe sync
-- Connect with a restricted read-only key; validated, encrypted at rest.
-- Initial backfill and incremental sync of customers, prices, subscriptions (with history) and invoices through the same lib functions as the importer and the API.
-- Webhook endpoint with signature verification for live updates; manual "Sync now".
-- **Done when:** tested against a local fake Stripe server with recorded fixtures; sync is idempotent.
-
-### 9 — Production readiness
-- Build runs `prisma generate` and `prisma migrate deploy`; pooled connection string for serverless.
-- Security headers and CSP; error tracking hook; web-vitals reporting.
-- Public demo: read-only demo workspace, reset nightly.
-- README and a case-study page: what it does, architecture, decisions, screenshots.
-- **Done when:** a production build passes every check and the README lets a stranger run it locally in minutes.
-
 ### 10 — Deploy
-- Vercel project, hosted Postgres, environment variables, cron, domain.
+- Vercel project, hosted Postgres, environment variables, cron, domain — step by step in [DEPLOY.md](DEPLOY.md).
 - **Done when:** the public URL serves the demo and a new user can sign up end to end.
+
+## Known issues
+
+- **Settings → currency:** in roughly one save in six the "Amounts are now in …" confirmation does not appear, although the change is saved (the field shows the new value after a reload). Seen in a production build under e2e load; cause not yet isolated.
+- **Stripe sync limits:** up to 5,000 of each object per run; discounts and coupons are not applied (list prices are used); a subscription item removed from a multi-item subscription in Stripe is not ended in Meridian until its subscription ends; weekly/daily, metered and tiered prices are skipped and listed.

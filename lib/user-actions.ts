@@ -44,12 +44,15 @@ import { after } from "next/server";
 import { Prisma, type Role } from "@prisma/client";
 import { z } from "zod";
 
+import { sendInviteEmailFor, unverifiedEmailRefusal } from "@/lib/account-email";
 import { writeAudit } from "@/lib/audit-writer";
 import { requireSession } from "@/lib/auth";
+import { isMailEnabled } from "@/lib/env";
 import { buildCsv, csvFilename } from "@/lib/csv/write";
 import { formatPersonName } from "@/lib/format";
 import { issueInvite } from "@/lib/invite-token";
 import { prisma } from "@/lib/prisma";
+import { demoRefusal } from "@/lib/demo";
 import type {
   ExportUsersResult,
   ResendInviteState,
@@ -370,7 +373,7 @@ function createFailure(
   message: string | null,
   fieldErrors: CreateUserFormState["fieldErrors"] = {},
 ): CreateUserFormState {
-  return { status: "error", message, fieldErrors, inviteToken: null };
+  return { status: "error", message, fieldErrors, inviteToken: null, emailedTo: null };
 }
 
 /**
@@ -404,6 +407,8 @@ export async function createUser(
   });
   if (caller === null) return createFailure(STALE_PAGE);
   if (caller.role === "MEMBER") return createFailure("Only owners and admins can add users.");
+  const unverified = (await demoRefusal(session.user.id)) ?? (await unverifiedEmailRefusal(session.user.id));
+  if (unverified !== null) return createFailure(unverified);
 
   const parsed = createUserSchema.safeParse({
     name: formData.get("name"),
@@ -454,8 +459,23 @@ export async function createUser(
     targetLabel: name,
     metadata: { role },
   });
+  // The email goes out after the response; the dialog shows the link either way.
+  after(async () => {
+    await sendInviteEmailFor({
+      userId: created.id,
+      inviterId: session.user.id,
+      organizationId: organizationId.data,
+      token: invite.token,
+    });
+  });
   revalidatePath(USERS_PATH);
-  return { status: "success", message: null, fieldErrors: {}, inviteToken: invite.token };
+  return {
+    status: "success",
+    message: null,
+    fieldErrors: {},
+    inviteToken: invite.token,
+    emailedTo: isMailEnabled ? email : null,
+  };
 }
 
 /**
@@ -523,7 +543,9 @@ export async function resendInvite(
   formData: FormData,
 ): Promise<ResendInviteState> {
   const target = await readTarget(formData);
-  if (target === null) return { ...failure(STALE_PAGE), token: null };
+  if (target === null) return { ...failure(STALE_PAGE), token: null, emailedTo: null };
+  const unverified = (await demoRefusal(target.callerId)) ?? (await unverifiedEmailRefusal(target.callerId));
+  if (unverified !== null) return { ...failure(unverified), token: null, emailedTo: null };
 
   let token: string | null = null;
   let entry: AuditEntry | null = null;
@@ -557,11 +579,23 @@ export async function resendInvite(
     return success("Invite resent.");
   });
 
-  if (result.status !== "success" || token === null) return { ...result, token: null };
+  if (result.status !== "success" || token === null) return { ...result, token: null, emailedTo: null };
 
   if (entry !== null) audit(entry);
+  const sentToken: string = token;
+  after(async () => {
+    await sendInviteEmailFor({
+      userId: target.userId,
+      inviterId: target.callerId,
+      organizationId: target.organizationId,
+      token: sentToken,
+    });
+  });
   revalidatePath(USERS_PATH);
-  return { ...result, token };
+  const invitee = isMailEnabled
+    ? await prisma.user.findUnique({ where: { id: target.userId }, select: { email: true } })
+    : null;
+  return { ...result, token, emailedTo: invitee?.email ?? null };
 }
 
 // ---------------------------------------------------------------------------

@@ -4,15 +4,23 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
+    "vercel-build": "prisma generate && prisma migrate deploy && next build",
     "start": "next start",
+    "postinstall": "prisma generate",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "verify:metrics": "ts-node -r ./scripts/ts-runtime.cjs scripts/verify-metrics.ts",
     "snapshots:recompute": "ts-node -r ./scripts/ts-runtime.cjs scripts/recompute-snapshots.ts",
     "e2e:billing": "node scripts/e2e-billing.mjs",
     "e2e:onboarding": "node scripts/e2e-onboarding.mjs",
     "e2e:import": "node scripts/e2e-import.mjs",
-    "e2e:api": "node scripts/e2e-api.mjs"
+    "e2e:api": "node scripts/e2e-api.mjs",
+    "e2e:email": "node scripts/e2e-email.mjs",
+    "e2e:notifications": "node scripts/e2e-notifications.mjs",
+    "e2e:stripe": "node scripts/e2e-stripe.mjs",
+    "fake:stripe": "node scripts/fake-stripe.mjs",
+    "e2e:production": "node scripts/e2e-production.mjs"
   },
   "prisma": {
     "seed": "ts-node -r ./scripts/ts-runtime.cjs prisma/seed.ts"
@@ -42,6 +50,7 @@
     "@types/node": "^20.19.43",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "dotenv": "^16.6.1",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",

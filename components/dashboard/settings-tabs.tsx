@@ -1,21 +1,21 @@
 import { NavChip } from "@/components/dashboard/nav-chip";
 
 /**
- * The Workspace | Profile | API keys switch shared by the settings pages.
+ * The Workspace | Profile | API keys | Integrations switch shared by the settings pages.
  *
  * Sub-navigation rather than a second sidebar entry: the sidebar marks Settings
  * active for everything under /dashboard/settings, so a separate "Profile" item
  * would light up alongside it. Same chips as the notifications tabs.
  *
- * API keys is for owners and admins only; members are not shown the tab (and
- * the page and its actions refuse them regardless).
+ * API keys and Integrations are for owners and admins only; members are not
+ * shown those tabs (and the pages and their actions refuse them regardless).
  */
 export function SettingsTabs({
   current,
-  showApiKeys,
+  showManagerTabs,
 }: {
-  current: "workspace" | "profile" | "api-keys";
-  showApiKeys: boolean;
+  current: "workspace" | "profile" | "api-keys" | "integrations";
+  showManagerTabs: boolean;
 }) {
   return (
     <nav
@@ -28,10 +28,15 @@ export function SettingsTabs({
       <NavChip href="/dashboard/settings/profile" active={current === "profile"}>
         Profile
       </NavChip>
-      {showApiKeys ? (
-        <NavChip href="/dashboard/settings/api-keys" active={current === "api-keys"}>
-          API keys
-        </NavChip>
+      {showManagerTabs ? (
+        <>
+          <NavChip href="/dashboard/settings/api-keys" active={current === "api-keys"}>
+            API keys
+          </NavChip>
+          <NavChip href="/dashboard/settings/integrations" active={current === "integrations"}>
+            Integrations
+          </NavChip>
+        </>
       ) : null}
     </nav>
   );

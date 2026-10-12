@@ -4,6 +4,7 @@
 // client `signIn` directly against /api/auth/* — no bespoke POST endpoint, no
 // SessionProvider needed.
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
 import { TriangleAlert } from "lucide-react";
@@ -15,6 +16,8 @@ import { Label } from "@/components/ui/label";
 type SignInFormProps = {
   callbackUrl: string;
   githubEnabled: boolean;
+  /** Offer "Forgot password?" — only when this deployment can send the link. */
+  passwordResetEnabled: boolean;
   initialError?: string;
 };
 
@@ -32,6 +35,7 @@ function humanizeError(code: string): string {
 export function SignInForm({
   callbackUrl,
   githubEnabled,
+  passwordResetEnabled,
   initialError,
 }: SignInFormProps) {
   const router = useRouter();
@@ -83,7 +87,10 @@ export function SignInForm({
         </p>
       ) : null}
 
-      <form onSubmit={onCredentialsSubmit} className="flex flex-col gap-4">
+      {/* method="post": if the form is submitted before the page's JavaScript
+          has loaded, the browser posts it instead of the default GET — which
+          would put the email and password in the URL, the history and logs. */}
+      <form method="post" onSubmit={onCredentialsSubmit} className="flex flex-col gap-4">
         <div className="flex flex-col gap-2">
           <Label htmlFor="email">Email</Label>
           <Input
@@ -101,7 +108,17 @@ export function SignInForm({
         </div>
 
         <div className="flex flex-col gap-2">
-          <Label htmlFor="password">Password</Label>
+          <div className="flex items-baseline justify-between gap-2">
+            <Label htmlFor="password">Password</Label>
+            {passwordResetEnabled ? (
+              <Link
+                href="/forgot-password"
+                className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+              >
+                Forgot password?
+              </Link>
+            ) : null}
+          </div>
           <Input
             id="password"
             name="password"

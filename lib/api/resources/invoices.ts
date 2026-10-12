@@ -167,7 +167,7 @@ export async function putInvoice(ctx: ApiWriteContext, externalId: string, body:
           status: recordAs,
           paidDate: input.paid_at ?? null,
         },
-        { source: "API", externalId },
+        { source: ctx.source, externalId },
       ),
       { customerId: "customer_external_id", subscriptionId: "subscription_external_id", amount: "amount", paidDate: "paid_at" },
     );

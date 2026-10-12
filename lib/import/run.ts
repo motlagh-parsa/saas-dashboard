@@ -18,6 +18,7 @@ import { analyzeImport, chunkUnits, executeChunk, type ImportAnalysis, type Impo
 import type { ImportKindKey } from "@/lib/import/kinds";
 import { MAX_STORED_ERRORS, type ImportErrorLog } from "@/lib/import/report";
 import { prisma } from "@/lib/prisma";
+import { evaluateAlerts } from "@/lib/alerts";
 import { recomputeSnapshots } from "@/lib/snapshots";
 
 export const KIND_ENUM: Record<ImportKindKey, ImportKind> = {
@@ -157,6 +158,8 @@ export async function writeRun(
       console.error("[import] snapshot recompute failed", { organizationId, runId, error });
     }
   }
+  // Imported invoices can be overdue, and imported history can contain churn.
+  await evaluateAlerts(organizationId);
 
   await prisma.importRun.update({
     where: { id: runId },

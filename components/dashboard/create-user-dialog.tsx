@@ -136,7 +136,11 @@ export function CreateUserDialog({ organizationId, roles, openOnMount = false }:
         ) : (
           <InviteLinkPanel
             title={`${invite.name} was added`}
-            description="Share this link with the user. It expires in 7 days."
+            description={
+              invite.emailedTo !== null
+                ? `We've emailed an invite to ${invite.emailedTo}. You can also share this link yourself. It expires in 7 days.`
+                : "Share this link with the user. It expires in 7 days."
+            }
             token={invite.inviteToken}
           />
         )}
@@ -148,6 +152,8 @@ export function CreateUserDialog({ organizationId, roles, openOnMount = false }:
 interface AddedUser {
   readonly name: string;
   readonly inviteToken: string;
+  /** Where the invite email went, or null when this deployment sends none. */
+  readonly emailedTo: string | null;
 }
 
 interface CreateUserFormProps {
@@ -171,7 +177,7 @@ function CreateUserForm({ organizationId, roles, onAdded }: CreateUserFormProps)
       const result = await createUser(previous, formData);
       if (result.status === "success" && result.inviteToken !== null) {
         toast.success("User added", { description: draft.name.trim() });
-        onAdded({ name: draft.name.trim(), inviteToken: result.inviteToken });
+        onAdded({ name: draft.name.trim(), inviteToken: result.inviteToken, emailedTo: result.emailedTo });
       }
       return result;
     },

@@ -3,10 +3,10 @@
  * `npx prisma migrate reset`. Runs through scripts/ts-runtime.cjs (see
  * prisma.config.ts) so it can use the app's own `@/` modules.
  *
- * What it does, and nothing else:
+ * What it does, and nothing else — `resetDemo` in lib/demo.ts:
  *   1. Upserts the demo user, the demo workspaces and the demo teammates.
- *   2. Replaces the SAMPLE billing data in those two workspaces only
- *      (lib/sample-data.ts), which deletes nothing but `source = SAMPLE` rows.
+ *   2. Clears what anyone added to those two workspaces, and replaces their
+ *      SAMPLE billing data. Every delete is scoped to those two workspaces.
  *
  * It never deletes without a filter. The old seed began by wiping every
  * organization, subscription and invoice in the database — every tenant's data.
@@ -15,50 +15,14 @@
  * The data ends on the day the seed runs (UTC). Pin it with
  * SEED_ANCHOR_DATE=YYYY-MM-DD for reproducible numbers.
  */
-import type { Role } from "@prisma/client";
-
 import { prisma } from "@/lib/prisma";
-import { generateSampleData, removeSampleData } from "@/lib/sample-data";
+import { DEMO_TEAMMATES, resetDemo } from "@/lib/demo";
 
 if (process.env.NODE_ENV === "production") {
   throw new Error(
     "prisma/seed.ts refuses to run with NODE_ENV=production. It writes demo users and sample data; production workspaces get sample data from the product, per workspace.",
   );
 }
-
-const DEMO_EMAIL = "demo@saas-dashboard.dev";
-
-interface WorkspaceSpec {
-  readonly slug: string;
-  readonly name: string;
-  readonly currency: string;
-}
-
-/** The demo user owns both; the switcher and per-workspace currency need two. */
-const WORKSPACES: readonly WorkspaceSpec[] = [
-  { slug: "northwind-analytics", name: "Northwind Analytics", currency: "USD" },
-  { slug: "globex-labs", name: "Globex Labs", currency: "EUR" },
-];
-
-interface TeammateSpec {
-  readonly name: string;
-  readonly email: string;
-  readonly role: Role;
-  readonly suspendedAt: Date | null;
-}
-
-/** Members of Northwind, so /dashboard/users has people to manage. Demo-only: no password. */
-const TEAMMATES: readonly TeammateSpec[] = [
-  { name: "Alice Chen", email: "alice@acme-demo.dev", role: "ADMIN", suspendedAt: null },
-  { name: "Bob Martinez", email: "bob@acme-demo.dev", role: "MEMBER", suspendedAt: null },
-  {
-    name: "Carol Singh",
-    email: "carol@acme-demo.dev",
-    role: "MEMBER",
-    suspendedAt: new Date("2026-06-01T00:00:00.000Z"),
-  },
-  { name: "Dan Lee", email: "dan@acme-demo.dev", role: "MEMBER", suspendedAt: null },
-];
 
 function anchorDate(): Date | undefined {
   const override = process.env.SEED_ANCHOR_DATE;
@@ -70,62 +34,15 @@ function anchorDate(): Date | undefined {
   return parsed;
 }
 
-async function upsertMembership(userId: string, organizationId: string, role: Role): Promise<void> {
-  await prisma.membership.upsert({
-    where: { userId_organizationId: { userId, organizationId } },
-    update: { role },
-    create: { userId, organizationId, role },
-  });
-}
-
 async function main(): Promise<void> {
-  const anchor = anchorDate();
-
-  const demoUser = await prisma.user.upsert({
-    where: { email: DEMO_EMAIL },
-    update: { name: "Demo Operator" },
-    create: { email: DEMO_EMAIL, name: "Demo Operator" },
-    select: { id: true },
-  });
-
-  const workspaces = [];
-  for (const spec of WORKSPACES) {
-    const workspace = await prisma.organization.upsert({
-      where: { slug: spec.slug },
-      update: { name: spec.name, currency: spec.currency },
-      create: { slug: spec.slug, name: spec.name, currency: spec.currency },
-      select: { id: true, name: true, currency: true },
-    });
-    await upsertMembership(demoUser.id, workspace.id, "OWNER");
-    workspaces.push(workspace);
-  }
-
-  const [northwind] = workspaces;
-  for (const teammate of TEAMMATES) {
-    // `update` restores the seeded name and suspension, undoing anything changed
-    // from the Users page on a re-seed.
-    const user = await prisma.user.upsert({
-      where: { email: teammate.email },
-      update: { name: teammate.name, suspendedAt: teammate.suspendedAt },
-      create: { email: teammate.email, name: teammate.name, suspendedAt: teammate.suspendedAt },
-      select: { id: true },
-    });
-    await upsertMembership(user.id, northwind.id, teammate.role);
-  }
-
+  // The demo user, its workspaces, teammates and sample data — the same
+  // function the daily job uses to reset a public demo (lib/demo.ts).
+  const result = await resetDemo({ anchorDate: anchorDate() });
   console.log("Seed complete.");
-  for (const workspace of workspaces) {
-    const removed = await removeSampleData(workspace.id);
-    const written = await generateSampleData(workspace.id, { anchorDate: anchor });
-    console.log(
-      `  ${workspace.name} (${workspace.currency}): ` +
-        `${written.plans} plans, ${written.customers} customers, ` +
-        `${written.subscriptions} subscriptions, ${written.invoices} invoices, ` +
-        `${written.snapshots} snapshots` +
-        (removed.subscriptions > 0 ? ` (replaced ${removed.subscriptions} sample subscriptions)` : ""),
-    );
+  for (const workspace of result.workspaces) {
+    console.log(`  ${workspace.name} (${workspace.currency}): ${workspace.customers} customers, alerts: ${workspace.alerts.join(", ") || "none"}`);
   }
-  console.log(`  demo user     : ${DEMO_EMAIL} (owner of both), ${TEAMMATES.length} teammates in ${northwind.name}`);
+  console.log(`  demo user: ${process.env.DEMO_EMAIL ?? "demo@saas-dashboard.dev"} (owner of both), ${DEMO_TEAMMATES.length} teammates`);
 }
 
 main()

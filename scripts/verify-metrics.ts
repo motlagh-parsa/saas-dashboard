@@ -35,6 +35,10 @@ import type { BillingInterval } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { verifyApi } from "./verify-api";
 import { verifyBillingLifecycle } from "./verify-billing-ops";
+import { verifyEmail } from "./verify-email";
+import { verifyNotifications } from "./verify-notifications";
+import { verifyStripe } from "./verify-stripe";
+import { verifyDemo } from "./verify-demo";
 import { verifyImports } from "./verify-import";
 import {
   getChurnRateTrend,
@@ -356,6 +360,10 @@ async function main(): Promise<void> {
     created.push(...(await verifyBillingLifecycle(check, stamp)));
     created.push(...(await verifyImports(check, stamp)));
     created.push(...(await verifyApi(check, stamp)));
+    created.push(...(await verifyEmail(check, stamp)));
+    created.push(...(await verifyNotifications(check, stamp)));
+    created.push(...(await verifyStripe(check, stamp)));
+    created.push(...(await verifyDemo(check, stamp)));
   } finally {
     // By id only: the workspaces this run created, and their cascade.
     if (created.length > 0) {
