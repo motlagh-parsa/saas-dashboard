@@ -97,3 +97,7 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for Vercel with a hosted Postgres, includin
 ## Roadmap
 
 [docs/ROADMAP.md](docs/ROADMAP.md) lists what is done, what's next, and known limits.
+
+## License
+
+[MIT](LICENSE) © 2026 Parsa Motlagh

@@ -4,7 +4,7 @@
 // billing data at all, and only for owners and admins; otherwise it is a fact
 // with its reason beside it. The Server Action (`updateWorkspaceCurrency`)
 // re-checks both, inside a transaction.
-import { useActionState, useState } from "react";
+import { startTransition, useActionState, useState } from "react";
 import type { FormEvent } from "react";
 import { Loader2 } from "lucide-react";
 
@@ -55,15 +55,22 @@ export function WorkspaceCurrencyForm({
     );
   }
 
-  function guard(event: FormEvent<HTMLFormElement>): void {
-    if (pending || draft === currency) event.preventDefault();
+  // The form keeps `action` so a submit before hydration still works, but once
+  // React is here it dispatches by hand: a `<form action>` submit is followed by
+  // React's automatic form reset, which puts the <select> back on its server-
+  // rendered option — the OLD currency — right after "Amounts are now in …".
+  function submit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    if (pending || draft === currency) return;
+    const formData = new FormData(event.currentTarget);
+    startTransition(() => formAction(formData));
   }
 
   const message =
     state.message ?? state.fieldErrors.currency ?? "Every amount is stored in this currency. You can change it until you add billing data.";
 
   return (
-    <form action={formAction} onSubmit={guard} className="flex flex-col gap-1.5">
+    <form action={formAction} onSubmit={submit} className="flex flex-col gap-1.5">
       <input type="hidden" name="organizationId" value={organizationId} />
       <label htmlFor="workspace-currency" className={FIELD_LABEL}>
         Reporting currency

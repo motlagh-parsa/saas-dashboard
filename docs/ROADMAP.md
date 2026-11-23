@@ -21,6 +21,13 @@ Each step ships as its own pull request. A step is done when every item under
 | 8 | Stripe sync: restricted read-only key (encrypted at rest), full and nightly sync through the API's own rules, signed webhooks for live updates |
 | 9 | Production readiness: migrations in the Vercel build, pooled connections, CSP and security headers, structured error logs, web vitals, health check, 404 and global error pages, a fenced and nightly-rebuilt public demo, README, deploy guide |
 
+## Launch prep (done)
+
+- Git history checked for committed secrets before going public: none (only placeholder values in `.env.example` and CI-only test values).
+- MIT license; privacy policy (`/privacy`) and terms of use (`/terms`), linked from the footer and the sign-up page.
+- Next.js 16.2.10 → 16.4.6: fixes a React bug where a fast Server Action could leave its form pending forever (seen as the currency confirmation missing in about one save in six).
+- Settings → currency: the dropdown no longer jumps back to the old currency after a save.
+
 ## Remaining
 
 ### 10 — Deploy
@@ -29,5 +36,4 @@ Each step ships as its own pull request. A step is done when every item under
 
 ## Known issues
 
-- **Settings → currency:** in roughly one save in six the "Amounts are now in …" confirmation does not appear, although the change is saved (the field shows the new value after a reload). Seen in a production build under e2e load; cause not yet isolated.
 - **Stripe sync limits:** up to 5,000 of each object per run; discounts and coupons are not applied (list prices are used); a subscription item removed from a multi-item subscription in Stripe is not ended in Meridian until its subscription ends; weekly/daily, metered and tiered prices are skipped and listed.
