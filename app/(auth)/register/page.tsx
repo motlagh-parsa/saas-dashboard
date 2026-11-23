@@ -37,7 +37,15 @@ export default function RegisterPage() {
       </p>
 
       <p className="mt-4 text-xs text-muted-foreground">
-        By continuing you agree to the terms of service and privacy policy.
+        By continuing you agree to the{" "}
+        <Link href="/terms" className="underline underline-offset-4 hover:text-foreground">
+          terms of use
+        </Link>{" "}
+        and{" "}
+        <Link href="/privacy" className="underline underline-offset-4 hover:text-foreground">
+          privacy policy
+        </Link>
+        .
       </p>
     </div>
   );

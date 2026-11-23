@@ -145,12 +145,11 @@ try {
   // click that lands before hydration can't be swallowed by the form's guard.
   await waitFor("Save enabled", `document.getElementById("workspace-currency").closest("form").querySelector('button[type="submit"]').getAttribute("aria-disabled") !== "true"`);
   await click("Save currency", `window.__e2e.byText('form button[type="submit"]', "Save", document.getElementById("workspace-currency").closest("form"))`);
-  // Polls the database, not the confirmation line: in about one run in six
-  // the "Amounts are now in …" message never shows although the save went
-  // through (an intermittent useActionState/revalidation interplay, noted in
-  // docs/ROADMAP.md). What this step checks is that the currency can change.
   await waitForCurrency(first.id, "GBP");
   const gbp = (await one(`SELECT currency FROM "Organization" WHERE id = $1`, [first.id])).currency;
+  // The confirmation shows, and the dropdown stays on what was saved (React's
+  // automatic form reset used to put it back on the old currency).
+  const gbpShown = await waitFor("GBP confirmation", `document.getElementById("workspace-currency-status")?.textContent === "Amounts are now in GBP." && document.getElementById("workspace-currency").value === "GBP"`);
   await load("/dashboard/settings");
   await whenInteractive("#workspace-currency");
   await evaluate(`(() => { window.__e2e.set(document.getElementById("workspace-currency"), "EUR"); return true; })()`);
@@ -158,12 +157,10 @@ try {
   // click that lands before hydration can't be swallowed by the form's guard.
   await waitFor("Save enabled", `document.getElementById("workspace-currency").closest("form").querySelector('button[type="submit"]').getAttribute("aria-disabled") !== "true"`);
   await click("Save currency", `window.__e2e.byText('form button[type="submit"]', "Save", document.getElementById("workspace-currency").closest("form"))`);
-  // Polls the database, not the confirmation line: in about one run in six
-  // the "Amounts are now in …" message never shows although the save went
-  // through (an intermittent useActionState/revalidation interplay, noted in
-  // docs/ROADMAP.md). What this step checks is that the currency can change.
   await waitForCurrency(first.id, "EUR");
+  const eurShown = await waitFor("EUR confirmation", `document.getElementById("workspace-currency-status")?.textContent === "Amounts are now in EUR." && document.getElementById("workspace-currency").value === "EUR"`);
   check("4. currency editable while empty (EUR → GBP → EUR)", gbp === "GBP" && (await one(`SELECT currency FROM "Organization" WHERE id = $1`, [first.id])).currency === "EUR");
+  check("4. each save confirms, and the dropdown keeps the saved currency", gbpShown && eurShown);
 
   // 5. A second workspace from the switcher, then delete it -----------------------------------
   await load("/dashboard");

@@ -14,6 +14,7 @@ import { DemoButton } from "@/components/auth/demo-button";
 import { Button } from "@/components/ui/button";
 import { BrandMark } from "@/components/dashboard/brand-mark";
 import { MrrBridge } from "@/components/marketing/mrr-bridge";
+import { SiteFooter } from "@/components/marketing/site-footer";
 
 export const metadata: Metadata = {
   title: "Meridian — SaaS revenue metrics you can reconcile",
@@ -182,19 +183,7 @@ export default async function Home() {
         </section>
       </main>
 
-      <footer className="border-t border-border">
-        <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-8 text-sm text-muted-foreground sm:px-6">
-          <BrandMark />
-          <nav aria-label="Footer" className="flex gap-5">
-            <Link href="/docs/api" className="hover:text-foreground">
-              API docs
-            </Link>
-            <Link href="/sign-in" className="hover:text-foreground">
-              Sign in
-            </Link>
-          </nav>
-        </div>
-      </footer>
+      <SiteFooter />
     </div>
   );
 }
