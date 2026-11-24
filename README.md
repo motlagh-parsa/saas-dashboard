@@ -6,7 +6,7 @@ Founders bring their data three ways: **import a CSV** (Stripe, Paddle, Chargebe
 
 **[Live demo →](https://saas-dashboard-tan-two.vercel.app)** Click **Try the demo** to open a workspace of sample data, no sign-up needed. You can also register and bring your own data. The demo is rebuilt every night.
 
-![Overview](docs/screenshots/overview.png)
+![A 30-second tour: the overview, the revenue bridge, a customer's history and a CSV import](docs/demo.gif)
 
 | | |
 |---|---|
